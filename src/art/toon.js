@@ -11,8 +11,32 @@ import * as THREE from 'three'
 
 const INK = 0x1a1208
 
-/** Ink weight in CSS pixels at devicePixelRatio 1. One number, whole frame. */
-const INK_PIXELS = 2.2
+/**
+ * Default ink weight in CSS pixels at devicePixelRatio 1.
+ *
+ * 2.2px across a 1600px frame is a hairline: it reads as an edge shader, not as
+ * a drawn line. 3.4 is the midfield weight a pen would lay down.
+ */
+const INK_PIXELS = 3.4
+
+/**
+ * Hand-inked animation does NOT use one line weight for everything — that is
+ * the single loudest tell that a frame was rendered rather than drawn. The pen
+ * gets heavier for the subject the shot is about, lighter for the forms behind
+ * it, and thins toward nothing at the horizon. Pass these as `pixels` so the
+ * hierarchy is stated in one place instead of scattered as magic numbers.
+ */
+export const INK_WEIGHT = {
+  /** The shot's subject and the buildings it acts against. */
+  HERO: 4.5,
+  /** Midfield props: fences, hay, livestock, crops. The frame's baseline. */
+  PROP: INK_PIXELS,
+  /** Drawn ground shapes — a road in a cartoon is a shape, not a texture. */
+  DECAL: 3.0,
+  /** Treeline and horizon landmarks. Fade toward 0 with distance. */
+  FAR: 2.0,
+}
+
 /** Ink never eats more than this share of an object's radius (tiny/far props). */
 const INK_MAX_FRACTION = 0.32
 
@@ -164,7 +188,7 @@ function inkStyle(color, pixels) {
  * frame's ink with it. Only the uniform objects are shared, so a single write
  * to `inkResolution` still re-weights the entire scene.
  */
-function inkMaterial(color, pixels) {
+function inkMaterial(color, pixels, flat) {
   const style = inkStyle(color, pixels)
   const uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog])
   uniforms.uResolution = inkResolution
@@ -174,7 +198,8 @@ function inkMaterial(color, pixels) {
     uniforms,
     vertexShader: INK_VERT,
     fragmentShader: INK_FRAG,
-    side: THREE.BackSide,
+    // A flat decal has no back: BackSide would cull its shell entirely.
+    side: flat ? THREE.DoubleSide : THREE.BackSide,
     fog: true,
     polygonOffset: true,
     polygonOffsetFactor: 1,
@@ -184,31 +209,100 @@ function inkMaterial(color, pixels) {
 
 // ------------------------------------------------------------------ ink hulls
 
+const vkey = (pos, i) => `${q(pos.getX(i))},${q(pos.getY(i))},${q(pos.getZ(i))}`
+
+/** Accumulate a direction onto a welded vertex key. */
+function accumulate(map, key, x, y, z) {
+  let acc = map.get(key)
+  if (!acc) map.set(key, (acc = [0, 0, 0]))
+  acc[0] += x
+  acc[1] += y
+  acc[2] += z
+}
+
 /** Average normals of coincident vertices so hard edges inflate without splitting. */
 function weldedNormals(geometry) {
   const pos = geometry.attributes.position
   const nrm = geometry.attributes.normal
   const welded = new Map()
   for (let i = 0; i < pos.count; i++) {
-    const key = `${q(pos.getX(i))},${q(pos.getY(i))},${q(pos.getZ(i))}`
-    let acc = welded.get(key)
-    if (!acc) welded.set(key, (acc = [0, 0, 0]))
-    acc[0] += nrm.getX(i)
-    acc[1] += nrm.getY(i)
-    acc[2] += nrm.getZ(i)
+    accumulate(welded, vkey(pos, i), nrm.getX(i), nrm.getY(i), nrm.getZ(i))
   }
-  return { pos, welded }
+  return welded
 }
 
-/** Clone of `geometry` carrying vec4 aInk = (welded normal, local width cap). */
-function buildHull(geometry, maxLocalWidth) {
+/** Triangles as [i, j, k] index triples, indexed or not. */
+function triangles(geometry) {
+  const index = geometry.index
+  const count = index ? index.count : geometry.attributes.position.count
+  const tris = []
+  for (let i = 0; i < count; i += 3) {
+    if (index) tris.push([index.getX(i), index.getX(i + 1), index.getX(i + 2)])
+    else tris.push([i, i + 1, i + 2])
+  }
+  return tris
+}
+
+const EDGES = [[0, 1, 2], [1, 2, 0], [2, 0, 1]]
+
+/** Undirected edge table keyed on welded endpoints; also sums the plane normal. */
+function collectEdges(pos, tris, normalOut) {
+  const [a, b, c, ac] = [0, 0, 0, 0].map(() => new THREE.Vector3())
+  const edges = new Map()
+  for (const t of tris) {
+    a.fromBufferAttribute(pos, t[0])
+    b.fromBufferAttribute(pos, t[1])
+    c.fromBufferAttribute(pos, t[2])
+    normalOut.add(b.sub(a).cross(ac.subVectors(c, a)))
+    for (const [i, j, k] of EDGES) {
+      const [ka, kb] = [vkey(pos, t[i]), vkey(pos, t[j])]
+      const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`
+      const seen = edges.get(key)
+      if (seen) seen.count++
+      else edges.set(key, { count: 1, a: t[i], b: t[j], c: t[k] })
+    }
+  }
+  return edges
+}
+
+/** Outward in-plane direction at each boundary vertex of a flat mesh. */
+function boundaryDirections(geometry) {
+  const pos = geometry.attributes.position
+  const plane = new THREE.Vector3()
+  const edges = collectEdges(pos, triangles(geometry), plane)
+  const dirs = new Map()
+  if (plane.lengthSq() < 1e-12) return dirs
+  plane.normalize()
+  const [a, b, c, dir, mid] = [0, 0, 0, 0, 0].map(() => new THREE.Vector3())
+  for (const e of edges.values()) {
+    if (e.count !== 1) continue
+    a.fromBufferAttribute(pos, e.a)
+    b.fromBufferAttribute(pos, e.b)
+    c.fromBufferAttribute(pos, e.c)
+    dir.subVectors(b, a).cross(plane).normalize()
+    if (dir.dot(c.sub(mid.addVectors(a, b).multiplyScalar(0.5))) > 0) dir.negate()
+    for (const i of [e.a, e.b]) accumulate(dirs, vkey(pos, i), dir.x, dir.y, dir.z)
+  }
+  return dirs
+}
+
+/**
+ * Clone of `geometry` carrying vec4 aInk = (expansion direction, local cap).
+ *
+ * `flat` swaps welded face normals for outward *boundary* directions. A ground
+ * decal's normals all point at the sky, so the usual hull inflates straight up
+ * and draws nothing; a road in a cartoon is a drawn shape, and this is what
+ * gives it its edge. Interior vertices get a zero direction and don't move.
+ */
+function buildHull(geometry, maxLocalWidth, flat) {
   const geo = geometry.clone()
   if (!geo.attributes.normal) geo.computeVertexNormals()
-  const { pos, welded } = weldedNormals(geo)
+  const pos = geo.attributes.position
+  const dirs = flat ? boundaryDirections(geo) : weldedNormals(geo)
   const ink = new Float32Array(pos.count * 4)
   const n = new THREE.Vector3()
   for (let i = 0; i < pos.count; i++) {
-    const acc = welded.get(`${q(pos.getX(i))},${q(pos.getY(i))},${q(pos.getZ(i))}`)
+    const acc = dirs.get(vkey(pos, i)) || [0, 0, 0]
     n.set(acc[0], acc[1], acc[2])
     if (n.lengthSq() > 1e-10) n.normalize()
     else n.set(0, 0, 0)
@@ -221,12 +315,12 @@ function buildHull(geometry, maxLocalWidth) {
   return geo
 }
 
-function hullFor(geometry, maxLocalWidth) {
+function hullFor(geometry, maxLocalWidth, flat) {
   let variants = hullGeometries.get(geometry)
   if (!variants) hullGeometries.set(geometry, (variants = new Map()))
-  const key = q(maxLocalWidth)
+  const key = `${q(maxLocalWidth)}|${flat ? 1 : 0}`
   let hull = variants.get(key)
-  if (!hull) variants.set(key, (hull = buildHull(geometry, maxLocalWidth)))
+  if (!hull) variants.set(key, (hull = buildHull(geometry, maxLocalWidth, flat)))
   return hull
 }
 
@@ -236,14 +330,19 @@ function inkWidthCap(object3d) {
   return Number.isFinite(sphere.radius) ? sphere.radius * INK_MAX_FRACTION : 0
 }
 
-function outlineFor(mesh, color, pixels, maxWorldWidth) {
+function outlineFor(mesh, color, pixels, maxWorldWidth, flat) {
   const scale = mesh.getWorldScale(new THREE.Vector3())
   const s = Math.max(Math.abs(scale.x), Math.abs(scale.y), Math.abs(scale.z)) || 1
-  const shell = new THREE.Mesh(hullFor(mesh.geometry, maxWorldWidth / s), inkMaterial(color, pixels))
+  const hull = hullFor(mesh.geometry, maxWorldWidth / s, flat)
+  const shell = new THREE.Mesh(hull, inkMaterial(color, pixels, flat))
   shell.name = 'outline'
   shell.userData.isOutline = true
+  // Kept so setInkWeight() can re-key the shared uniform without a re-walk.
+  shell.userData.inkColor = color
   shell.castShadow = false
   shell.receiveShadow = false
+  // Draws before its source mesh, so a coincident decal wins the equal-depth
+  // test over the shell's interior and only the boundary ring survives.
   shell.renderOrder = -1
   return shell
 }
@@ -253,12 +352,17 @@ function outlineFor(mesh, color, pixels, maxWorldWidth) {
  * Outlines are parented to their source mesh, so they follow procedural
  * animation for free. Meshes with `userData.noOutline` (pupils, nostrils) skip.
  * @param {THREE.Object3D} object3d
- * @param {{color?: number, thickness?: number, pixels?: number}} [opts]
+ * @param {{color?: number, thickness?: number, pixels?: number, flat?: boolean}} [opts]
  *   `thickness` is legacy world-space weight and is ignored — ink weight is a
- *   global constant now. `pixels` nudges it for a subject that must read first.
+ *   global constant now. `pixels` places the object in the weight hierarchy;
+ *   use `INK_WEIGHT`. `flat: true` inks a ground decal (path, patch disc) along
+ *   its boundary instead of its face normals — see buildHull.
  * @returns {THREE.Object3D} the same object, for chaining.
  */
-export function addOutline(object3d, { color = INK, thickness = 0.035, pixels = INK_PIXELS } = {}) {
+export function addOutline(
+  object3d,
+  { color = INK, thickness = 0.035, pixels = INK_PIXELS, flat = false } = {}
+) {
   void thickness // signature kept; world-space weight is what we are fixing.
   object3d.updateWorldMatrix(true, true)
   const targets = []
@@ -269,6 +373,31 @@ export function addOutline(object3d, { color = INK, thickness = 0.035, pixels = 
     targets.push(o)
   })
   const maxWorldWidth = inkWidthCap(object3d)
-  for (const mesh of targets) mesh.add(outlineFor(mesh, color, pixels, maxWorldWidth))
+  for (const mesh of targets) mesh.add(outlineFor(mesh, color, pixels, maxWorldWidth, flat))
+  return object3d
+}
+
+/**
+ * Re-weight an already-inked object's line, in place.
+ *
+ * The lever for atmospheric perspective: place a treeline, then thin its ink
+ * toward 0 with distance so the horizon recedes instead of sitting at the same
+ * pen weight as the barn. `pixels <= 0.05` hides the shells outright rather
+ * than drawing a sub-pixel shimmer. Cheap — it only swaps a shared uniform
+ * object reference, so call it at placement time, not per frame.
+ * @param {THREE.Object3D} object3d an object already passed through addOutline.
+ * @param {number} pixels new on-screen weight.
+ * @returns {THREE.Object3D} the same object, for chaining.
+ */
+export function setInkWeight(object3d, pixels) {
+  object3d.traverse((o) => {
+    if (!o.userData?.isOutline || !o.material?.uniforms) return
+    if (pixels <= 0.05) {
+      o.visible = false
+      return
+    }
+    o.visible = true
+    o.material.uniforms.uPixels = inkStyle(o.userData.inkColor ?? INK, pixels).uPixels
+  })
   return object3d
 }

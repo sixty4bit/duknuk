@@ -66,11 +66,17 @@ const STYLE_CSS = `
 .duk-hint {
   /* bottom-left; the money chip has moved to top-right so the two panels
      balance the composition on a diagonal instead of both hugging the left
-     edge against the barn/paddock mass on the right. */
-  position: fixed; bottom: 20px; left: 16px;
+     edge against the barn/paddock mass on the right. Inset well past the
+     portrait/tail overhang (-20px/-17px) so both clear the viewport edge
+     with margin instead of clipping. */
+  position: fixed; bottom: 24px; left: 40px;
   transform: rotate(-0.8deg);
   padding: 10px 26px 10px 34px; font-size: 15px; text-align: left;
   max-width: 40vw;
+  /* match the world's ink outline weight (toon.js INK_PIXELS = 2.2) instead
+     of the panel default, so the balloon reads as inked by the same hand
+     as the 3D scene */
+  border-width: 2.2px;
   animation: duk-squash-in 0.4s ease-out;
 }
 .duk-hint::before {

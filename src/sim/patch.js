@@ -44,6 +44,38 @@ function foodColor(t, target = new THREE.Color()) {
   return target.copy(BARE).lerp(THIN, t * 2)
 }
 
+// Grass-stroke overlay tuning — same visual language as world.js's
+// buildGroundTexture (short curved hand-drawn strokes, tonal variation), but
+// per-cell and food-driven instead of a static repeating tile. Cells below
+// GRASS_STROKE_MIN_FOOD paint as bare dirt with no strokes at all — depletion
+// is meant to read as texture loss, not just a hue shift.
+const GRASS_STROKE_MIN_FOOD = 0.05
+const GRASS_MAX_STROKES_PER_CELL = 6
+// Strokes are tinted darker than the cell's own fill so they read as blades
+// catching shadow, not a different material. 0.8 = "~20% darker"; the tones
+// below spread a little variation around that so strokes in the same cell
+// aren't a single flat repeated value (mirrors buildGroundTexture's 3-tone
+// array).
+const GRASS_STROKE_DARKEN = 0.8
+const GRASS_STROKE_TONES = [0.85, 1, 1.15]
+// Target stroke size in *world units*, matched to buildGroundTexture's own
+// ~0.14-0.3u long / ~0.04-0.07u wide marks so a patch's grass and the
+// surrounding field's grass read as the same brush. Multiplied by pxPerCell
+// (px per 1 world unit, since CELL_SIZE = 1) to land in canvas space.
+const GRASS_STROKE_LEN_MIN = 0.14
+const GRASS_STROKE_LEN_SPREAD = 0.16
+const GRASS_STROKE_WIDTH_MIN = 0.04
+const GRASS_STROKE_WIDTH_SPREAD = 0.03
+
+// Deterministic per-seed RNG (same LCG shape as world.js's local helper) so a
+// cell's stroke *positions* stay fixed across redraws — only how many of them
+// are drawn changes with food, which reads as grass filling in / wearing away
+// rather than the whole patch re-jittering every tick.
+function seededRand(seed) {
+  let s = seed >>> 0
+  return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296)
+}
+
 // A stable (non-random) wobble so the boundary reads as hand-drawn but never
 // re-jitters between rebuilds. Both the fill disc and the ink-outline rim
 // wall are built from these exact points, so they can never drift apart —
@@ -267,6 +299,7 @@ export class Patch {
   _redrawTexture() {
     this._paintRawFill()
     this._featherFillToTexture()
+    this._paintGrassStrokes()
     this._texture.needsUpdate = true
   }
 
@@ -327,6 +360,56 @@ export class Patch {
     ctx.save()
     ctx.globalCompositeOperation = 'destination-in'
     ctx.fill(this._outlineClipPath())
+    ctx.restore()
+  }
+
+  // Paints hand-drawn grass strokes on top of the feathered fill, crisp
+  // (not blurred, unlike the base fill) so they read as brush detail rather
+  // than getting mushed into the feather pass — same intent as
+  // buildGroundTexture's strokes in world.js, just per-cell and food-driven:
+  // a full cell gets a dense little cluster of dark-green marks, a thin cell
+  // gets a sparse few, a bare cell gets none at all (just the dirt fill).
+  // This is what makes depletion read as texture loss, not only color loss.
+  _paintGrassStrokes() {
+    const ctx = this._ctx
+    const cols = this._cols
+    const px = this._pxPerCell
+    const base = new THREE.Color()
+    const shade = new THREE.Color()
+    ctx.save()
+    ctx.clip(this._outlineClipPath())
+    ctx.lineCap = 'round'
+    for (let j = 0; j < cols; j++) {
+      for (let i = 0; i < cols; i++) {
+        const f = this._food[j * cols + i]
+        if (f < GRASS_STROKE_MIN_FOOD) continue
+        const count = Math.round(f * GRASS_MAX_STROKES_PER_CELL)
+        if (count === 0) continue
+        foodColor(f, base)
+        const rnd = seededRand(((j * cols + i) * 2654435761) >>> 0)
+        const cx = i * px
+        const cy = j * px
+        for (let s = 0; s < count; s++) {
+          const tone = GRASS_STROKE_TONES[s % GRASS_STROKE_TONES.length]
+          shade.copy(base).multiplyScalar(GRASS_STROKE_DARKEN * tone)
+          ctx.strokeStyle = `#${shade.getHexString()}`
+          ctx.lineWidth = (GRASS_STROKE_WIDTH_MIN + rnd() * GRASS_STROKE_WIDTH_SPREAD) * px
+          const x = cx + rnd() * px
+          const y = cy + rnd() * px
+          const a = rnd() * Math.PI * 2
+          const len = (GRASS_STROKE_LEN_MIN + rnd() * GRASS_STROKE_LEN_SPREAD) * px
+          ctx.beginPath()
+          ctx.moveTo(x, y)
+          ctx.quadraticCurveTo(
+            x + Math.cos(a) * len * 0.5,
+            y + Math.sin(a) * len * 0.5 - len * 0.2,
+            x + Math.cos(a) * len,
+            y + Math.sin(a) * len
+          )
+          ctx.stroke()
+        }
+      }
+    }
     ctx.restore()
   }
 

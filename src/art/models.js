@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { toonMaterial, addOutline } from './toon.js'
+import { toonMaterial, addOutline, INK_WEIGHT } from './toon.js'
 
 // Every builder returns a THREE.Group whose origin sits at ground contact and
 // which faces +Z. Primitives only. Cartoon proportions beat real ones: big
@@ -188,7 +188,7 @@ function buildChicken() {
   g.add(rig)
   g.userData.parts = { body, head, comb: head.userData.comb, wingL, wingR, legL, legR, tail }
   // Heaviest line in the frame: the subject reads before the props do.
-  return addOutline(g, { pixels: 2.6 })
+  return addOutline(g, { pixels: INK_WEIGHT.HERO })
 }
 
 /** Cream hen, ~1.85 to the comb tips: beach-ball body, oversized head, huge
@@ -302,7 +302,7 @@ function buildEgg() {
   g.add(rig, accents)
   driveEgg(rig, accents, shell)
   animateAccents(accents, 0)
-  return addOutline(g, { pixels: 3.0 })
+  return addOutline(g, { pixels: INK_WEIGHT.HERO })
 }
 
 /** Off-white egg, ~0.42 tall, popping into existence with an ink starburst. */
@@ -349,7 +349,8 @@ function buildCoop() {
   const door = at(new THREE.Object3D(), 0, 0, 1.98)
   g.add(door)
   g.userData.door = door
-  return addOutline(g)
+  // The chicken's home and the frame's second read: hero weight, like the barn.
+  return addOutline(g, { pixels: INK_WEIGHT.HERO })
 }
 
 /** Red hen-house on stumpy legs, ~2.6 wide, ramp up to a dark doorway. */
@@ -447,7 +448,9 @@ function buildBarn() {
   }
   g.add(barnDoors(), barnLoft())
   g.add(at(box(0.16, 4.4, 0.12, P.barnRed), 0, 2.3, 4.24))
-  return addOutline(g)
+  // The biggest silhouette on the farm has to carry the heaviest line, or it
+  // dissolves into the field at viewing size.
+  return addOutline(g, { pixels: INK_WEIGHT.HERO })
 }
 
 /** Classic Saturday-morning barn: bulging gambrel, cream trim, X-braced doors. */
@@ -458,11 +461,13 @@ export function makeBarn() {
 // --------------------------------------------------------------------- props
 
 // A fence is the longest straight edge in the frame, so it is the one prop that
-// can betray the whole drawing: one 28-unit box for a rail and a uniform gap
-// between posts is extruded CAD sitting next to a hand-wobbled barn. Every post
-// leans its own way, sits at its own height, and every span of rail is a
-// separate stick with its own sag, roll and length. Seeded off `length`, so a
-// given fence is the same fence on every reload.
+// can betray the whole drawing. The failure mode isn't "too neat" — it's the
+// middle: ±0.08 of noise on a dead-level rail reads as slightly warped
+// mass-produced lumber, which costs variance and buys no charm. So the
+// variation is pushed to where a viewer actually reads it: posts differ in
+// HEIGHT and GIRTH, they LEAN off vertical on both axes, every rail BOWS at its
+// midpoint under its own weight, and one rail up the run has plainly given up.
+// Seeded off `length`, so a given fence is the same fence on every reload.
 const FENCE = {
   spanTarget: 2.2,
   postH: 1.2,
@@ -471,33 +476,83 @@ const FENCE = {
   deepEvery: 5,
   deepBy: 0.15,
   railY: [0.84, 0.46],
+  /** Post height swing, as a fraction of postH. */
+  heightVary: 0.12,
+  /** Post girth swing, as a fraction of nominal. */
+  girthVary: 0.16,
+  /** Max lean off vertical, radians, drawn independently for pitch and roll. */
+  lean: 0.078, // ~4.5°
+  /** Mid-span droop of a rail, metres. */
+  sag: [0.05, 0.1],
+  /** How far the dead rail's loose end has dropped. */
+  brokenDrop: [0.4, 0.62],
 }
 
-/** Posts with per-post lean, height and depth. Both ends stay on the nominal
- *  span so the fence still measures `length` end to end for placement code. */
+const POST_W = 0.19
+
+/** A post nobody sighted down a line: its own height, girth, and lean on both
+ *  axes. Returns the height so the caller can seat its base in the dirt. */
+function fencePost(rnd) {
+  const h = FENCE.postH * (1 + (rnd() - 0.5) * 2 * FENCE.heightVary)
+  const w = POST_W * (1 + (rnd() - 0.5) * 2 * FENCE.girthVary)
+  const lean = () => (rnd() - 0.5) * 2 * FENCE.lean
+  const post = box(w, h, w * 1.05, P.cream)
+  return { post: rot(post, lean(), (rnd() - 0.5) * 0.18, lean()), h }
+}
+
+/** Both ends stay on the nominal span so the fence still measures `length` end
+ *  to end for placement code. */
 function fencePosts(rnd, length, spans, gap) {
   const posts = new THREE.Group()
   const xs = []
   for (let i = 0; i <= spans; i++) {
     const end = i === 0 || i === spans
     const x = -length / 2 + i * gap + (end ? 0 : (rnd() - 0.5) * 0.16)
-    const h = FENCE.postH + (rnd() - 0.5) * 0.24
+    const { post, h } = fencePost(rnd)
     const sunk = i % FENCE.deepEvery === FENCE.deepEvery - 1 ? FENCE.deepBy : 0
-    const post = rot(box(0.19, h, 0.2, P.cream), 0, (rnd() - 0.5) * 0.18, (rnd() - 0.5) * 0.28)
     posts.add(at(post, x, h / 2 - FENCE.postSink - sunk, (rnd() - 0.5) * 0.06))
     xs.push(x)
   }
   return { posts, xs }
 }
 
-/** One stick per span, overlapping its posts by a hair so a short cut hides
- *  behind the post instead of opening a gap. */
-function fenceRails(rnd, xs, y) {
+/** One straight stick between two points in the XZ-facing XY plane, overlapping
+ *  its ends by a hair so a joint hides behind a post instead of opening a gap. */
+function railStick(x0, y0, x1, y1) {
+  const [dx, dy] = [x1 - x0, y1 - y0]
+  const stick = rot(box(Math.hypot(dx, dy) + 0.07, 0.15, 0.12, P.cream), 0, 0, Math.atan2(dy, dx))
+  return at(stick, (x0 + x1) / 2, (y0 + y1) / 2, 0.03)
+}
+
+/** A span of rail as two sticks meeting at a dropped midpoint: a shallow bow,
+ *  not a uniform y offset. Wood sags in the middle; that is the drawing. */
+function fenceRail(rnd, x0, x1, y) {
+  const rail = new THREE.Group()
+  const [lo, hi] = FENCE.sag
+  const [yA, yB] = [y + (rnd() - 0.5) * 0.07, y + (rnd() - 0.5) * 0.07]
+  const mid = x0 + (x1 - x0) * (0.44 + rnd() * 0.12)
+  const yMid = (yA + yB) / 2 - (lo + rnd() * (hi - lo))
+  rail.add(railStick(x0, yA, mid, yMid), railStick(mid, yMid, x1, yB))
+  return rail
+}
+
+/** The rail that finally let go: still nailed at one post, loose end in the
+ *  dirt, the rest of the span missing. One deliberate failure buys more
+ *  hand-drawn read than any amount of even noise. */
+function brokenRail(rnd, x0, x1, y) {
+  const rail = new THREE.Group()
+  const [lo, hi] = FENCE.brokenDrop
+  const nailed = rnd() > 0.5
+  const stub = nailed ? x0 + (x1 - x0) * 0.62 : x1 - (x1 - x0) * 0.62
+  rail.add(railStick(nailed ? x0 : x1, y, stub, y - (lo + rnd() * (hi - lo))))
+  return rail
+}
+
+function fenceRails(rnd, xs, y, breakAt) {
   const rails = new THREE.Group()
   for (let i = 0; i < xs.length - 1; i++) {
-    const len = xs[i + 1] - xs[i] + 0.04 + (rnd() - 0.5) * 0.16
-    const rail = rot(box(len, 0.15, 0.12, P.cream), 0, 0, (rnd() - 0.5) * 0.12)
-    rails.add(at(rail, (xs[i] + xs[i + 1]) / 2, y + (rnd() - 0.5) * 0.08, 0.03))
+    const build = i === breakAt ? brokenRail : fenceRail
+    rails.add(build(rnd, xs[i], xs[i + 1], y))
   }
   return rails
 }
@@ -509,8 +564,11 @@ function buildFence(length) {
   const gap = length / spans
   const { posts, xs } = fencePosts(rnd, length, spans, gap)
   g.add(posts)
-  for (const y of FENCE.railY) g.add(fenceRails(rnd, xs, y))
-  return addOutline(g)
+  // Only the top row breaks — the bottom rail stays whole so the run still
+  // reads as a fence, and its loose end can't swing below the grass.
+  const breakAt = spans >= 4 ? 1 + Math.floor(rnd() * (spans - 2)) : -1
+  FENCE.railY.forEach((y, row) => g.add(fenceRails(rnd, xs, y, row === 0 ? breakAt : -1)))
+  return addOutline(g, { pixels: INK_WEIGHT.PROP })
 }
 
 /** Post-and-rail fence running along +X, centered on the origin. */
@@ -550,7 +608,7 @@ function buildHaystack(seed) {
   const h = 2.05 + rnd() * 0.85
   const rad = 1.32 + rnd() * 0.42
   g.add(hayMound(rnd, h, rad), hayStraws(rnd, h, rad))
-  return addOutline(g)
+  return addOutline(g, { pixels: INK_WEIGHT.PROP })
 }
 
 /**
@@ -640,7 +698,8 @@ function buildPig() {
   driveBreath(body, body.children[0])
   g.userData.parts = { body }
   g.userData.restYaw = PIG_REST_YAW
-  return addOutline(g)
+  // A gag lying in the chicken's path is a foreground read, a step under hero.
+  return addOutline(g, { pixels: 4.0 })
 }
 
 /** Pink pig flopped on its side, big round belly, fast asleep. ~1.9 long.
@@ -757,7 +816,10 @@ function buildTree(seed) {
   const trunkH = base + rnd() * span
   lean.add(treeTrunk(rnd, trunkH), treeCanopy(kind, rnd, leafPair(rnd), trunkH))
   g.add(lean)
-  return addOutline(g)
+  // Trees are scenery, not subject: a thin line lets the treeline sit behind
+  // the buildings. world.js should thin it further toward 0 with distance via
+  // toon.js `setInkWeight` once each tree is placed.
+  return addOutline(g, { pixels: INK_WEIGHT.FAR })
 }
 
 /**
@@ -782,7 +844,7 @@ function buildSalesman() {
   g.add(at(tube(0.2, 0.2, 0.16, P.hay, 14), 0, 1.9, 0))
   g.add(at(tube(0.36, 0.36, 0.04, P.hay, 16), 0, 1.83, 0))
   g.add(at(box(0.34, 0.26, 0.12, P.woodDark), 0.46, 0.75, 0.1))
-  return addOutline(g)
+  return addOutline(g, { pixels: INK_WEIGHT.HERO })
 }
 
 /** Traveling-salesman NPC placeholder, ~1.8 tall. Unused in phase 1. */
