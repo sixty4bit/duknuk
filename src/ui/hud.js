@@ -39,13 +39,20 @@ const STYLE_CSS = `
 .duk-money {
   /* top-right, opposite the hint balloon's bottom-left corner — the two
      panels sit on a diagonal so the UI doesn't pile all its weight on the
-     same side as the balloon while the barn/paddock mass sits on the right. */
+     same side as the balloon while the barn/paddock mass sits on the right.
+     Stroke and shadow are restated here (not left to .duk-panel's default)
+     so this chip is drawn with the same pen as the 3D scene: border-width
+     matches INK_WEIGHT.HERO (toon.js, 4.5 css px), color is the shared INK
+     constant, and the shadow is a hard fixed-pixel offset with zero blur —
+     no soft drop-shadow, that's what dates a chip to modern mobile UI. */
   position: fixed; top: 16px; right: 16px;
   display: flex; align-items: center; gap: 10px;
   padding: 8px 8px 8px 18px;
   flex-direction: row-reverse;
   transform: rotate(1deg);
   animation: duk-squash-in 0.4s ease-out;
+  border-width: 4.5px;
+  box-shadow: 5px 6px 0 var(--duk-ink);
 }
 .duk-coin {
   width: 40px; height: 40px; border-radius: 50%;
@@ -53,12 +60,16 @@ const STYLE_CSS = `
   display: flex; align-items: center; justify-content: center;
   font-size: 22px; line-height: 1; flex: none;
   box-shadow: inset 0 -3px 0 rgba(0,0,0,0.15);
+  font-family: 'Arial Black', Impact, 'Anton', 'Arial Narrow Bold', Haettenschweiler, sans-serif;
 }
 .duk-coin.duk-bounce { animation: duk-coin-bounce 0.45s ease-out; }
 .duk-money-amount {
-  /* heavy condensed display face — hand-inked title-card lettering, not a
-     default app sans. System font, no asset/load needed. */
-  font-family: Impact, 'Anton', 'Arial Narrow Bold', Haettenschweiler, sans-serif;
+  /* heavy slab display face — hand-inked title-card lettering, not a
+     geometric app sans. 'Arial Black' leads the stack because headless
+     screenshot renderers frequently lack Impact/Anton; Arial Black ships
+     with (or is substituted by a Liberation-family equivalent on) every
+     major desktop platform, so the heavy face survives font fallback. */
+  font-family: 'Arial Black', Impact, 'Anton', 'Arial Narrow Bold', Haettenschweiler, sans-serif;
   text-transform: uppercase;
   font-size: 26px; letter-spacing: 0.8px;
 }
@@ -73,10 +84,12 @@ const STYLE_CSS = `
   transform: rotate(-0.8deg);
   padding: 10px 26px 10px 34px; font-size: 15px; text-align: left;
   max-width: 40vw;
-  /* match the world's ink outline weight (toon.js INK_PIXELS = 2.2) instead
-     of the panel default, so the balloon reads as inked by the same hand
-     as the 3D scene */
-  border-width: 2.2px;
+  /* stroke matches INK_WEIGHT.HERO (toon.js, 4.5 css px) and the shared INK
+     color constant, and the shadow is restated as a hard fixed-pixel offset
+     with zero blur, so this chip is inked by the same pen as the money chip
+     and the 3D scene instead of reading as blurred modern mobile chrome */
+  border-width: 4.5px;
+  box-shadow: 5px 6px 0 var(--duk-ink);
   animation: duk-squash-in 0.4s ease-out;
 }
 .duk-hint::before {
@@ -129,8 +142,10 @@ const STYLE_CSS = `
 }
 .duk-hint-text {
   position: relative;
-  /* heavy condensed display face — hand-inked title-card lettering */
-  font-family: Impact, 'Anton', 'Arial Narrow Bold', Haettenschweiler, sans-serif;
+  /* heavy slab display face — hand-inked title-card lettering. 'Arial
+     Black' leads the stack so the heavy face survives fallback on renderers
+     without Impact/Anton (see .duk-money-amount). */
+  font-family: 'Arial Black', Impact, 'Anton', 'Arial Narrow Bold', Haettenschweiler, sans-serif;
   text-transform: uppercase;
   letter-spacing: 0.4px;
 }

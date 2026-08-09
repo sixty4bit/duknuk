@@ -18,11 +18,11 @@ renderer.toneMapping = THREE.NoToneMapping // ink shader outputs raw color; keep
 app.appendChild(renderer.domElement)
 
 const scene = new THREE.Scene()
-const camera = new THREE.PerspectiveCamera(34, innerWidth / innerHeight, 0.5, 600)
-camera.position.set(2, 14, 34)
+const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.5, 600)
+camera.position.set(-1, 9.5, 23)
 
 const controls = new OrbitControls(camera, renderer.domElement)
-controls.target.set(2, 2.5, -14)
+controls.target.set(-1.5, 1.8, -7)
 controls.enableDamping = true
 controls.maxPolarAngle = Math.PI * 0.46
 controls.minPolarAngle = Math.PI * 0.34

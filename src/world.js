@@ -4,10 +4,13 @@ import { makeBarn, makeFence, makeHaystack, makePig, makeTree } from './art/mode
 
 const SIZE = 120
 const HALF = SIZE / 2
-// Warmed (was 0xc3d4e0, a cool blue-violet within a few percent of the sky's
-// horizon band and the far-backdrop disc — fog, sky-horizon and far-ground
-// fused into one grey slab). A warm haze separates by hue as well as value.
-const FOG_COLOR = 0xd9dcc4
+// Cool desaturated blue-green (was 0xd9dcc4, a warm cream at ~86% value —
+// LIGHTER than the sky zenith at ~65%, so distant fogged ground rendered
+// brighter than the sky above it and blew out to white paper). This shares
+// the sky's hue family and sits darker in value than the sky's horizon band
+// (see buildSkyTexture's `horizon`, lerped up from this color), so recession
+// now reads as "toward shadow," not "toward a lit blank wall."
+const FOG_COLOR = 0x9fb6b0
 
 // Side-and-slightly-behind the subject (elevation ~24deg, azimuth roughly
 // camera-left) instead of near-overhead — was (26,34,30), which combined with
@@ -297,7 +300,11 @@ function buildSkyTexture() {
   // default camera's visible band is only ~-6.5..+4.4deg — i.e. y =
   // h*0.475..0.537. h*0.44 (elevation +10.8deg) was off the top of the frame
   // entirely, which is why the ridge/treeline never rendered on screen.
-  const horizonY = h * 0.505
+  // Raised ~0.004 off 0.505 (whole stack, including the near-treeline
+  // baseline below) so the now-much-thicker bands sit further into the
+  // visible sky band instead of dipping toward the frame's lower,
+  // fog-dominated edge.
+  const horizonY = h * 0.501
   // Three receding painted planes instead of two (hill, treeline) — the hill
   // was near-black-adjacent to the treeline's own near-black (#1f2e1a next to
   // sky), so the treeline read as a rendering artifact and the hill nearly
@@ -305,9 +312,14 @@ function buildSkyTexture() {
   // (not a uniform scale of one another) so the three don't read as one
   // printed, repeating wobble — and the nearest (treeline) band carries the
   // largest, most irregular scallops, per how a painted flat recedes.
+  // Mid-ridge and near-treeline amplitudes raised ~3x (0.0055->0.016,
+  // 0.011->0.03) — at the old amplitudes the tallest feature was a ~13px
+  // bump on a 1024px texture, a hairline at the default camera; the fog
+  // gradient was doing all the "distance" work the painted backdrop was
+  // written to do.
   drawSilhouetteBand(ctx, w, horizonY - h * 0.015, horizonY - h * 0.001, '#7d95a8', 5, h * 0.005) // far hill
-  drawSilhouetteBand(ctx, w, horizonY - h * 0.005, horizonY + h * 0.005, '#5a7263', 8, h * 0.0055) // mid ridge
-  drawSilhouetteBand(ctx, w, h * 0.512 - h * 0.013, h * 0.512 + h * 0.006, '#3c5240', 7, h * 0.011) // near treeline
+  drawSilhouetteBand(ctx, w, horizonY - h * 0.005, horizonY + h * 0.005, '#5a7263', 8, h * 0.016) // mid ridge
+  drawSilhouetteBand(ctx, w, h * 0.508 - h * 0.013, h * 0.508 + h * 0.006, '#3c5240', 7, h * 0.03) // near treeline
   drawPaintedClouds(ctx, w, h)
   const tex = new THREE.CanvasTexture(canvas)
   if ('colorSpace' in tex) tex.colorSpace = THREE.SRGBColorSpace
@@ -396,7 +408,12 @@ function buildContactShadow(radius) {
     unitShadowGeo.rotateX(-Math.PI / 2)
   }
   if (!sharedShadowMat) {
-    sharedShadowMat = new THREE.MeshBasicMaterial({ map: contactShadowTexture(), transparent: true, depthWrite: false, fog: false })
+    // fog: true (was false) — an unfogged dark decal over fogged ground is
+    // exactly the mismatch that produced the cold grey-teal wash: the ground
+    // recedes toward FOG_COLOR but the decal on top of it didn't, so their
+    // composite drifted off both. The shadow now recedes with the ground it
+    // lies on.
+    sharedShadowMat = new THREE.MeshBasicMaterial({ map: contactShadowTexture(), transparent: true, depthWrite: false, fog: true })
   }
   const mesh = new THREE.Mesh(unitShadowGeo, sharedShadowMat)
   mesh.scale.set(radius, 1, radius * SHADOW_SQUASH)
@@ -408,32 +425,29 @@ function buildContactShadow(radius) {
 let cloudShadowTex = null
 
 /** Lobed cloud-shape silhouette (same five-puff massing as drawCloudShape),
- * filled flat and softened with a short blur — a cloud shadow is a drawn
- * lobed shape with a readable edge, not a bell-curve airbrush. Raised to
- * rgba(20,46,28,0.42) at a 2px blur (was 0.24 at 6px, ~6% value drop that was
- * invisible against mid-green grass) so the silhouette actually holds a
- * drawn contour, plus a second, smaller inner-lobe pass at 0.15 alpha so the
- * mass reads as two values (a core and a penumbra) instead of one flat tone.
- * Shared/cached like the contact-shadow texture above. */
+ * filled flat with a light blur — a cloud shadow is a drawn lobed shape with
+ * a readable edge, not a bell-curve airbrush. 1024px canvas (was 256px,
+ * which stretched to the mass's 55x30 — now 26x16 — world units turned a 2px
+ * blur into ~7 screen px of feather, soft enough to erase the lobed contour
+ * this comment claimed it had) at a 1px blur. Single flat pass at 0.30 alpha
+ * (was a 0.42 core + 0.15 inner-lobe stack) so the shape keeps one hard,
+ * legible edge instead of two soft ones. Shared/cached like the
+ * contact-shadow texture above. */
 function cloudShadowTexture() {
   if (cloudShadowTex) return cloudShadowTex
-  const px = 256
+  const px = 1024
   const canvas = document.createElement('canvas')
   canvas.width = canvas.height = px
   const ctx = canvas.getContext('2d')
   const s = px * 0.34
   const puffs = [[0, 0, 1], [0.7, 0.15, 0.65], [-0.7, 0.12, 0.68], [0.25, -0.35, 0.55], [-0.3, -0.3, 0.5]]
-  const drawLobes = (scale, alpha) => {
-    ctx.filter = 'blur(2px)'
-    ctx.fillStyle = `rgba(20,46,28,${alpha})`
-    for (const [dx, dy, r] of puffs) {
-      ctx.beginPath()
-      ctx.ellipse(px / 2 + dx * s * scale, px / 2 + dy * s * 0.6 * scale, r * s * 0.75 * scale, r * s * 0.42 * scale, 0, 0, Math.PI * 2)
-      ctx.fill()
-    }
+  ctx.filter = 'blur(1px)'
+  ctx.fillStyle = 'rgba(20,46,28,0.30)'
+  for (const [dx, dy, r] of puffs) {
+    ctx.beginPath()
+    ctx.ellipse(px / 2 + dx * s, px / 2 + dy * s * 0.6, r * s * 0.75, r * s * 0.42, 0, 0, Math.PI * 2)
+    ctx.fill()
   }
-  drawLobes(1, 0.42)
-  drawLobes(0.62, 0.15)
   cloudShadowTex = new THREE.CanvasTexture(canvas)
   return cloudShadowTex
 }
@@ -445,7 +459,11 @@ function cloudShadowTexture() {
 function buildCloudShadowMass(width, depth) {
   const geo = new THREE.PlaneGeometry(width, depth)
   geo.rotateX(-Math.PI / 2)
-  const mat = new THREE.MeshBasicMaterial({ map: cloudShadowTexture(), transparent: true, depthWrite: false, fog: false })
+  // fog: true (was false) — unfogged over fogged ground was the actual
+  // source of the teal smear between coop and barn: a dark cool decal
+  // composited over ground already pushed warm by scene fog produces a
+  // grey-teal wash unrelated to either color in isolation.
+  const mat = new THREE.MeshBasicMaterial({ map: cloudShadowTexture(), transparent: true, depthWrite: false, fog: true })
   const mesh = new THREE.Mesh(geo, mat)
   mesh.renderOrder = 1
   return mesh
@@ -733,6 +751,44 @@ function fadeOutlineWithDistance(tree, t) {
   return tree
 }
 
+/** Dedicated near-camera wing-flat silhouette for the repoussoir frame —
+ * NOT a scaled makeTree(). At 2.4-2.6x scale, 12-14u from camera, a single
+ * smooth canopy sphere crops into a featureless kidney-shaped blob: no
+ * scalloped edge, no sky-gaps, no trunk in frame, and the near-black tint
+ * swallowed makeTree's own ink outline so the mass had no drawn edge at all.
+ * This builds 7 overlapping canopy lobes by hand around a trunk that lands
+ * at ground level (so it reads as entering the bottom frame edge at this
+ * proximity), deliberately skips lobes at ~180deg and ~280deg so two sky-gaps
+ * punch through the mass, and tints a lit-side subset of lobes toward
+ * `rimHex` (lighter than `baseHex`) so the silhouette holds a shape instead
+ * of reading as a hole in the frame. */
+function buildWingFlat(baseHex, rimHex) {
+  const g = new THREE.Group()
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.5, 2.2, 8), toonMaterial(0x4a2f1a, { steps: 3 }))
+  trunk.position.y = 0.9
+  g.add(trunk)
+  const baseMat = toonMaterial(baseHex, { steps: 3 })
+  const rimMat = toonMaterial(rimHex, { steps: 3 })
+  // angle (deg, gaps deliberately left at ~180 and ~280), radial offset,
+  // height, radius, lit (sun-facing side gets the rim tint)
+  const lobes = [
+    { a: 20, r: 0.9, h: 2.6, s: 1.5, lit: true },
+    { a: 70, r: 1.3, h: 3.4, s: 1.7, lit: false },
+    { a: 130, r: 1.1, h: 2.2, s: 1.4, lit: false },
+    { a: 230, r: 1.0, h: 3.0, s: 1.6, lit: false },
+    { a: 320, r: 0.8, h: 2.4, s: 1.3, lit: true },
+    { a: 350, r: 1.4, h: 3.8, s: 1.9, lit: true },
+    { a: 40, r: 0.5, h: 3.9, s: 1.2, lit: true },
+  ]
+  for (const lo of lobes) {
+    const rad = THREE.MathUtils.degToRad(lo.a)
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(lo.s, 8, 7), lo.lit ? rimMat : baseMat)
+    mesh.position.set(Math.cos(rad) * lo.r, lo.h, Math.sin(rad) * lo.r)
+    g.add(mesh)
+  }
+  return addOutline(g, { color: 0x120d06, thickness: 0.05 })
+}
+
 // ------------------------------------------------------------- crop patch
 
 /** Tilled bed with furrow stripes under staggered, height-varied plants —
@@ -809,13 +865,15 @@ export class World {
     this.scene = scene
     this.size = SIZE
     this.obstacles = []
-    // Pulled back in (was 85/200, under which the farthest visible ground —
-    // ~90u — received essentially zero fog, so distant grass held the same
-    // saturation/value as foreground grass: the single strongest
-    // "game engine, not painting" tell). far pulled further, 140 -> 110, so
-    // the near treeline rank (r~72) keeps some canopy saturation instead of
-    // dissolving into the haze before it's even reached the horizon band.
-    this.scene.fog = new THREE.Fog(FOG_COLOR, 30, 110)
+    // Pushed back out (was 30/110 with a warm cream FOG_COLOR — at that
+    // range the near treeline rank, r~72-100, sat at 87%+ fog *before* the
+    // per-tree baked tint in _placeTreeClump applied a second blend toward
+    // the same color, so the entire mid-ground washed to a white flood). Now
+    // FOG_COLOR is cool/dark instead of warm/light and _placeTreeClump no
+    // longer double-applies it, so 55/260 gives a gradual recession that
+    // still resolves the barn, water tower and mid grove as shapes rather
+    // than erasing them by 100u.
+    this.scene.fog = new THREE.Fog(FOG_COLOR, 55, 260)
     this._buildSky()
     this._buildLights()
     this._buildGround()
@@ -916,9 +974,11 @@ export class World {
    * needs to fall across a readable object to be legible as cast tone with a
    * cause; parked over open grass it reads as nothing (or a stain) no matter
    * how the value is tuned. A real 3D cloud sits along the sun's ray from the
-   * mass so the shadow has a visible source. */
+   * mass so the shadow has a visible source. Shrunk from 55x30 to 26x16 (was
+   * field-wide enough to read as a haze bank rather than one shape crossing
+   * the barn and fence). */
   _placeCloudShadowMass() {
-    const mass = buildCloudShadowMass(55, 30)
+    const mass = buildCloudShadowMass(26, 16)
     mass.position.set(14, 0.03, -8)
     mass.rotation.y = 0.4
     this.scene.add(mass)
@@ -1205,17 +1265,18 @@ export class World {
    * default camera's (6,8,20)->(-6,0,-22) forward vector, i.e. entirely
    * behind the eye and never rendered. Moved inside the near third of the
    * frustum so crowns break the top edge and trunks break the left/right
-   * edges. Tint pushed darker still (was 0x2f6b28) — a wing flat should read
-   * as a near-black shape, not a competing green. */
+   * edges. Built from buildWingFlat (not a scaled makeTree()) so the mass
+   * scallops, punches sky-gaps, and carries a trunk into the bottom edge and
+   * a lit-side rim tint instead of cropping to one featureless canopy sphere. */
   _placeForegroundFrame() {
     // Start camera: (2,14,34) → (2,2.5,-14), h-half-FOV ≈ 28°. Side edges at
     // forward distance d sit at |x-2| ≈ 0.54·d, so wings must hug x≈-10/+15
     // at z≈12-16 to actually break the frame; the old ±24-30 never rendered.
-    const spots = [{ x: -10, z: 14, s: 2.6 }, { x: 14.5, z: 12, s: 2.4 }, { x: -30, z: 16, s: 1.6 }]
+    const spots = [{ x: -10, z: 12, s: 2.0 }, { x: 14.5, z: 10, s: 1.9 }, { x: -30, z: 14, s: 1.4 }]
     for (const spot of spots) {
-      const tree = tintCanopy(makeTree(), 0x24541f)
-      tree.scale.setScalar(spot.s)
-      this._place(tree, spot.x, spot.z, 1.4 * spot.s, Math.random() * Math.PI * 2)
+      const wing = buildWingFlat(0x24541f, 0x3d7a33)
+      wing.scale.setScalar(spot.s)
+      this._place(wing, spot.x, spot.z, 1.4 * spot.s, Math.random() * Math.PI * 2)
     }
   }
 
@@ -1254,10 +1315,19 @@ export class World {
       const t = smooth01(r, 60, 115)
       const base = TREE_BASE_HUES[Math.floor(Math.random() * TREE_BASE_HUES.length)]
       const hueDeg = (Math.random() - 0.5) * 24
-      let hex = jitterCanopyColor(base, hueDeg, 0)
-      if (t > 0) hex = new THREE.Color(hex).lerp(new THREE.Color(FOG_COLOR), t).getHex()
+      // No baked lerp toward FOG_COLOR here anymore — scene.fog (see World
+      // constructor) already recedes this same geometry once per frame at
+      // render time; baking a matching blend into the material color on top
+      // of that double-applied the fade and, combined with the old warm/light
+      // FOG_COLOR, washed the whole mid-ground to cream.
+      const hex = jitterCanopyColor(base, hueDeg, 0)
       const tree = tintCanopy(makeTree(), hex)
-      if (t > 0.03) fadeOutlineWithDistance(tree, t)
+      // Outline weight still fades with distance, but clamped at 0.6 so a
+      // silhouette element (mid/far treeline) never loses its drawn ink edge
+      // entirely — uncapped, a far-rank tree at r~115 would hit
+      // fadeOutlineWithDistance's near-zero floor and read as a colored blob.
+      const outlineT = Math.min(t, 0.6)
+      if (outlineT > 0.03) fadeOutlineWithDistance(tree, outlineT)
       tree.scale.setScalar(scale)
       this._place(tree, x, z, 1.1 * scale, Math.random() * Math.PI * 2)
     }

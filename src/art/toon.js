@@ -40,10 +40,32 @@ export const INK_WEIGHT = {
 /** Ink never eats more than this share of an object's radius (tiny/far props). */
 const INK_MAX_FRACTION = 0.32
 
-/** Darkest ramp step. High floor keeps the dark plane a colour, not a hole. */
-const SHADOW_FLOOR = 0.55
+/**
+ * Darkest ramp step — the multiplier the dark cel plane keeps.
+ *
+ * At 0.55 the dark plane was only 45% down from the lit one, and world.js's
+ * ambient lifted both, so on screen the two planes differed by roughly 15%:
+ * grass, shaded barn wall and cast shadow all sat on one mid tone and the frame
+ * had no value structure at all. Golden-age flats separate lit and shadow
+ * closer to 2:1. Against the 0.45 ambient this lands near 1.75:1 — a real break
+ * that still reads as a colour rather than a hole, because SHADOW_WARM carries
+ * the dark end toward ochre instead of grey.
+ */
+const SHADOW_FLOOR = 0.4
+/**
+ * Characters run the 3-step ramp and are the smallest read in the frame. Their
+ * local colours are already mid-value (cream hen, pink pig), so their dark
+ * plane sits a hair above the architecture's or the animal goes to mud at
+ * viewing size. Still far below the old flat 0.55.
+ */
+const CHARACTER_STEPS = 3
+const CHARACTER_SHADOW_FLOOR = 0.44
 /** Hue shift at the dark end: shadows go warm instead of just going down. */
 const SHADOW_WARM = [1.16, 0.97, 0.79]
+
+/** Ramps are cached by step count, so the floor can key off it directly. */
+const shadowFloorFor = (steps) =>
+  steps === CHARACTER_STEPS ? CHARACTER_SHADOW_FLOOR : SHADOW_FLOOR
 
 const gradientMaps = new Map()
 // Keyed by source geometry so hulls die with the model they belong to (eggs are
@@ -57,8 +79,8 @@ const q = (v) => Math.round(v * 1e4)
 // ------------------------------------------------------------------ toon ramp
 
 /** RGB multiplier for ramp position `t` (0 = shadow plane, 1 = lit plane). */
-function rampStep(t) {
-  const value = SHADOW_FLOOR + (1 - SHADOW_FLOOR) * t
+function rampStep(t, floor) {
+  const value = floor + (1 - floor) * t
   const warmth = 1 - t
   return SHADOW_WARM.map((w) => clamp01(value * (1 + (w - 1) * warmth)))
 }
@@ -69,8 +91,9 @@ function gradientMap(steps) {
   const cached = gradientMaps.get(n)
   if (cached) return cached
   const data = new Uint8Array(n * 4)
+  const floor = shadowFloorFor(n)
   for (let i = 0; i < n; i++) {
-    const [r, g, b] = rampStep(i / (n - 1))
+    const [r, g, b] = rampStep(i / (n - 1), floor)
     data.set([Math.round(255 * r), Math.round(255 * g), Math.round(255 * b), 255], i * 4)
   }
   const tex = new THREE.DataTexture(data, n, 1, THREE.RGBAFormat)

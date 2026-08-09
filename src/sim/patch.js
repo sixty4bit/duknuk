@@ -28,20 +28,35 @@ const RING_WALL_HEIGHT = 0.35
 // is enough resolution for this to actually hide the per-cell grid.
 const FEATHER_PX = 3.5
 
-// Lush must be the frame's brightest, most saturated note — a monotone
-// descending value ramp from lush to bare — so depletion reads from value
-// alone at a glance. Fresh grass in a cartoon is bright yellow-green, not a
-// dark tone that risks reading as a hole or shadow against the field.
-// Grazed-out fades through dusty gold to dark umber. Tuned against the
-// *decoded* (sRGB colorSpace) texture output, not raw canvas hex — see the
-// colorSpace assignment in _buildVisuals.
-const LUSH = new THREE.Color('#8fdc45')
-const THIN = new THREE.Color('#d4ae38')
+// Lush must read as the *richest* grass in the picture — deeper and more
+// saturated than the field base (world.js's ground tones run ~0x86c057 to
+// 0xb2d668) so a full patch reads as the hero mechanic's payoff, not a
+// bleached or freshly-mown spot lighter than the grass around it. Grazed-out
+// fades through dusty gold to dark umber. Tuned against the *decoded* (sRGB
+// colorSpace) texture output, not raw canvas hex — see the colorSpace
+// assignment in _buildVisuals.
+const LUSH = new THREE.Color('#57b02c')
+const THIN = new THREE.Color('#cf9f2e')
 const BARE = new THREE.Color('#96652f')
 
+// Depletion must read as *shrinkage*, not a slow tint shift: the per-cell
+// food value t (0..1) is eased through this power curve before it drives the
+// color ramp below, so losing only the first ~30% of a cell's food already
+// visibly retreats it out of the lush band. Solved so t=0.7 (30% eaten)
+// lands right at the lush/thin midpoint (0.7^2 = 0.49) — cells nearest the
+// rim (eaten first) drop out of "lush" fast, so the lush core visibly
+// retreats inward from the boundary instead of the whole disc fading
+// together.
+const DEPLETION_CURVE_POWER = 2
+
+function easedFood(t) {
+  return Math.pow(Math.max(0, t), DEPLETION_CURVE_POWER)
+}
+
 function foodColor(t, target = new THREE.Color()) {
-  if (t >= 0.5) return target.copy(THIN).lerp(LUSH, (t - 0.5) * 2)
-  return target.copy(BARE).lerp(THIN, t * 2)
+  const e = easedFood(t)
+  if (e >= 0.5) return target.copy(THIN).lerp(LUSH, (e - 0.5) * 2)
+  return target.copy(BARE).lerp(THIN, e * 2)
 }
 
 // Grass-stroke overlay tuning — same visual language as world.js's
@@ -51,6 +66,11 @@ function foodColor(t, target = new THREE.Color()) {
 // is meant to read as texture loss, not just a hue shift.
 const GRASS_STROKE_MIN_FOOD = 0.05
 const GRASS_MAX_STROKES_PER_CELL = 6
+// Steeper than DEPLETION_CURVE_POWER so blade texture thins out and drops
+// to zero earlier than the color itself finishes its lush->bare transition —
+// depletion reads as shrinkage *plus* texture loss stacking on top of each
+// other, not a single slow tint shift standing in for both.
+const GRASS_STROKE_FALLOFF_POWER = 3.5
 // Strokes are tinted darker than the cell's own fill so they read as blades
 // catching shadow, not a different material. 0.8 = "~20% darker"; the tones
 // below spread a little variation around that so strokes in the same cell
@@ -383,7 +403,7 @@ export class Patch {
       for (let i = 0; i < cols; i++) {
         const f = this._food[j * cols + i]
         if (f < GRASS_STROKE_MIN_FOOD) continue
-        const count = Math.round(f * GRASS_MAX_STROKES_PER_CELL)
+        const count = Math.round(Math.pow(f, GRASS_STROKE_FALLOFF_POWER) * GRASS_MAX_STROKES_PER_CELL)
         if (count === 0) continue
         foodColor(f, base)
         const rnd = seededRand(((j * cols + i) * 2654435761) >>> 0)

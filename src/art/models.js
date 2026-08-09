@@ -77,8 +77,8 @@ const scl = (o, x, y = x, z = x) => (o.scale.set(x, y, z), o)
 /** Tiny features that an outline would swallow (pupils, nostrils). */
 const detail = (o) => ((o.userData.noOutline = true), (o.castShadow = false), o)
 
-function extruded(shape, depth, color) {
-  const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, curveSegments: 8 })
+function extruded(shape, depth, color, curveSegments = 8) {
+  const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, curveSegments })
   geo.translate(0, 0, -depth / 2)
   return meshOf(geo, color)
 }
@@ -370,6 +370,18 @@ function barnWallShape() {
   return s
 }
 
+/**
+ * Segments per curve on the gambrel arc.
+ *
+ * ExtrudeGeometry gives every facet a flat normal, so the 2-step toon ramp
+ * breaks exactly on facet edges: at 8 segments per curve that break was a
+ * visible staircase climbing the roof, and the silhouette was a polygon. The
+ * roof spans ~11 m across five curves, so 32 puts a facet every ~7 cm — under
+ * the ink weight at any sane camera distance, which turns the staircase back
+ * into one clean lit-plane edge. Cheap: it is one extrude, built once.
+ */
+const ROOF_CURVE_SEGMENTS = 32
+
 function barnRoofShape() {
   const s = new THREE.Shape()
   s.moveTo(-5.45, 4.02)
@@ -441,7 +453,7 @@ function barnLoft() {
 function buildBarn() {
   const g = new THREE.Group()
   g.add(extruded(barnWallShape(), 8, P.barnRed))
-  g.add(extruded(barnRoofShape(), 8.7, P.barnDark))
+  g.add(extruded(barnRoofShape(), 8.7, P.barnDark, ROOF_CURVE_SEGMENTS))
   for (const s of [-1, 1]) g.add(at(box(10.5, 0.32, 0.32, P.cream), 0, 4.16, 4.02 * s))
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) g.add(at(box(0.32, 4.2, 0.32, P.cream), 5.04 * sx, 2.1, 3.94 * sz))
@@ -576,30 +588,56 @@ export function makeFence(length = 6) {
   return withSteps(STEPS.ARCH, () => buildFence(length))
 }
 
-function hayMound(rnd, h, rad) {
-  const profile = []
-  const bulge = 0.08 + rnd() * 0.16
-  for (let i = 0; i <= 11; i++) {
-    const t = i / 12
-    profile.push(new THREE.Vector2(rad * (1 - t) ** 0.62 * (1 + bulge * Math.sin(t * Math.PI)), t * h))
+// A smooth lathe cone in ochre is a bare primitive at any distance, and the
+// haystack is one of the biggest masses in the frame. Hay is stacked in
+// COURSES, so the profile steps out into an overhanging lip and tucks back
+// under at each course line: three notches cut into the silhouette itself,
+// which the ink hull then traces. Loose straw breaks the contour on top of
+// that. Silhouette first, decoration second — a tuft drawn inside the outline
+// is invisible at midfield.
+const HAY_COURSES = 3
+
+/** Mound radius at height fraction `t`, so straw can sit on the real contour. */
+const hayRadius = (rad, bulge, t) => rad * (1 - t) ** 0.62 * (1 + bulge * Math.sin(t * Math.PI))
+
+/** Lathe profile with a lip-and-tuck at each course line. */
+function hayProfile(rnd, h, rad, bulge) {
+  const rings = 12
+  const every = Math.floor(rings / (HAY_COURSES + 1))
+  const points = []
+  for (let i = 0; i <= rings; i++) {
+    const t = i / (rings + 1)
+    points.push(new THREE.Vector2(hayRadius(rad, bulge, t), t * h))
+    if (i === 0 || i % every || i > every * HAY_COURSES) continue
+    points.push(new THREE.Vector2(hayRadius(rad, bulge, t) * (1.09 + rnd() * 0.07), (t + 0.012) * h))
+    points.push(new THREE.Vector2(hayRadius(rad, bulge, t + 0.05) * 0.97, (t + 0.05) * h))
   }
-  profile.push(new THREE.Vector2(0, h + 0.12))
-  const mound = meshOf(new THREE.LatheGeometry(profile, 20), P.hay)
-  return scl(mound, 1, 1, 0.85 + rnd() * 0.32)
+  points.push(new THREE.Vector2(0, h + 0.12))
+  return points
 }
 
-function hayStraws(rnd, h, rad) {
-  const straws = new THREE.Group()
-  const count = 5 + Math.floor(rnd() * 5)
+const hayMound = (rnd, h, rad, bulge) =>
+  meshOf(new THREE.LatheGeometry(hayProfile(rnd, h, rad, bulge), 22), P.hay)
+
+/**
+ * Straw sticking out of the mound. Flattened cones, not sticks: a fan of straw
+ * has width, and the old 0.09-radius spike was a sliver that disappeared at
+ * viewing size. They are seated ON the contour and pushed outward along it, so
+ * wherever the camera stands three or four are breaking the silhouette.
+ */
+function hayTufts(rnd, h, rad, bulge) {
+  const tufts = new THREE.Group()
+  const count = 8 + Math.floor(rnd() * 3)
   for (let i = 0; i < count; i++) {
-    const a = (i / count) * Math.PI * 2 + rnd() * 0.9
-    const y = 0.3 + rnd() * (h * 0.65)
-    const r = rad * 0.93 * (1 - y / (h + 0.2)) ** 0.62
-    const swivel = at(rot(new THREE.Group(), 0, a, 0), Math.sin(a) * r, y, Math.cos(a) * r)
-    swivel.add(rot(spike(0.09, 0.5 + rnd() * 0.3, P.hayDark, 6), 0.95 + rnd() * 0.45, 0, 0))
-    straws.add(swivel)
+    const a = (i / count) * Math.PI * 2 + rnd() * 0.6
+    const t = 0.16 + rnd() * 0.62
+    const r = hayRadius(rad, bulge, t) * 0.98
+    const swivel = at(rot(new THREE.Group(), 0, a, 0), Math.sin(a) * r, t * h, Math.cos(a) * r)
+    const tuft = scl(spike(0.2 + rnd() * 0.1, 0.6 + rnd() * 0.45, P.hayDark, 7), 1, 1, 0.34)
+    swivel.add(at(rot(tuft, 1.15 + rnd() * 0.5, (rnd() - 0.5) * 0.5, 0), 0, 0.04, 0.18))
+    tufts.add(swivel)
   }
-  return straws
+  return tufts
 }
 
 function buildHaystack(seed) {
@@ -607,7 +645,16 @@ function buildHaystack(seed) {
   const g = new THREE.Group()
   const h = 2.05 + rnd() * 0.85
   const rad = 1.32 + rnd() * 0.42
-  g.add(hayMound(rnd, h, rad), hayStraws(rnd, h, rad))
+  const bulge = 0.08 + rnd() * 0.16
+  const mound = hayMound(rnd, h, rad, bulge)
+  // Squash mound and straw together, so the tufts stay welded to the contour.
+  const stack = scl(new THREE.Group(), 1, 1, 0.85 + rnd() * 0.32)
+  stack.add(mound, hayTufts(rnd, h, rad, bulge))
+  g.add(stack)
+  // The mound is a building-sized mass, so it carries a building's line or it
+  // dissolves into the field; the straw stays a step lighter so the decoration
+  // never out-draws the shape it sits on.
+  addOutline(mound, { pixels: INK_WEIGHT.HERO })
   return addOutline(g, { pixels: INK_WEIGHT.PROP })
 }
 
