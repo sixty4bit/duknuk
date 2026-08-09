@@ -8,23 +8,33 @@ const CELL_SIZE = 1
 const BUCKET_LEVELS = 64
 const BEST_SPOT_MIN_FOOD = 0.08
 const DISTANCE_WEIGHT = 0.12
-const PIXELS_PER_CELL = 16
+const PIXELS_PER_CELL = 24
 const MAX_CANVAS = 512
 const RENDER_Y = 0.03
 const RING_COLOR = 0x2c4a1e
+// The patch boundary is the core mechanic's affordance — bolder than the
+// frame's default ink weight (toon.js INK_PIXELS) so it reads as the single
+// most legible line on screen, and always wins the depth test against the
+// ground it sits on (see the depthTest override applied after addOutline in
+// _buildVisuals) since it is a UI-grade affordance, not a lit 3D edge.
+const RING_INK_PIXELS = 4
 // World-space height of the (invisible) rim wall used only to give the ink
 // outline real outward-facing normals to expand along — see buildWallGeometry.
-const RING_WALL_HEIGHT = 0.1
+// Tall enough that the shell has real vertical body to read against the
+// ground on arcs where the wall runs near-tangent to the camera.
+const RING_WALL_HEIGHT = 0.35
 // Gaussian blur radius (in canvas px) applied over the raw cell fill so cell
-// boundaries feather instead of stair-stepping. Kept small: at 16 px/cell a
-// heavier blur mushes the grazing gradient into illegibility.
-const FEATHER_PX = 0.8
+// boundaries feather instead of stair-stepping. At PIXELS_PER_CELL=24 there
+// is enough resolution for this to actually hide the per-cell grid.
+const FEATHER_PX = 3.5
 
-// Lush must be the darkest, richest note in the frame (grazed-vs-fresh reads
-// backwards otherwise) — deep saturated emerald down to dry umber. Tuned
+// Lush must be the frame's richest note — well away from field/ground green
+// in both hue and value, not a few-percent variant of it — so grazed-vs-fresh
+// reads unmistakably. Deep saturated emerald with a blue lean, darker and
+// more saturated than anything else on the ground, down to dry umber. Tuned
 // against the *decoded* (sRGB colorSpace) texture output, not raw canvas hex —
 // see the colorSpace assignment in _buildVisuals.
-const LUSH = new THREE.Color('#4f9c33')
+const LUSH = new THREE.Color('#1f7a3c')
 const THIN = new THREE.Color('#d8b23a')
 const BARE = new THREE.Color('#8a5a2b')
 
@@ -161,7 +171,11 @@ export class Patch {
 
     // Fill and rim share one wobbled boundary so they're guaranteed
     // coincident — no bleed on the inward arcs, no gap on the outward ones.
+    // Kept on the instance so _paintRawFill can clip the per-cell fill to the
+    // exact same smooth curve instead of the square cell grid's own jagged
+    // approximation of a circle.
     const outline = buildWobbledOutline(this.radius)
+    this._outline = outline
 
     // Same shading path as the ground beneath it (toon-lit, not unlit) so
     // "lush" and "grazed" land the same value/saturation logic as the field.
@@ -184,7 +198,19 @@ export class Patch {
     this._wallMesh = new THREE.Mesh(buildWallGeometry(outline, RING_WALL_HEIGHT), wallMat)
     this._wallMesh.renderOrder = 6
     this.group.add(this._wallMesh)
-    addOutline(this._wallMesh, { color: RING_COLOR })
+    addOutline(this._wallMesh, { color: RING_COLOR, pixels: RING_INK_PIXELS })
+    // The generated ink shell inherits toon.js's default polygonOffset
+    // (factor +1), which pushes it *away* from the camera — backwards for a
+    // decal that must always win against the ground surface it sits on, and
+    // on arcs where the rim wall runs near-tangent to the view it loses the
+    // depth test outright. This is a UI-grade affordance, not a lit 3D edge,
+    // so it always wins: disable depth testing/writing and draw it last.
+    this._wallMesh.traverse((o) => {
+      if (!o.userData.isOutline) return
+      o.material.depthTest = false
+      o.material.depthWrite = false
+      o.renderOrder = 10
+    })
   }
 
   _disposeVisuals() {
@@ -232,13 +258,35 @@ export class Patch {
     this._texture.needsUpdate = true
   }
 
-  // Hard-edged per-cell fill onto the offscreen raw canvas.
+  // Canvas-space path tracing the same wobbled boundary the disc geometry
+  // and ink rim are built from, in the same pixel coordinates _paintRawFill
+  // draws cells in (see the i*px/j*px mapping there). Clipping fill to this
+  // means the visible edge is always that smooth curve, never the square
+  // cell grid's own stair-stepped approximation of a circle.
+  _outlineClipPath() {
+    const half = (this._cols - 1) / 2
+    const px = this._pxPerCell
+    const path = new Path2D()
+    this._outline.forEach(([cx, cz], idx) => {
+      const x = (cx / CELL_SIZE + half) * px
+      const y = (cz / CELL_SIZE + half) * px
+      if (idx === 0) path.moveTo(x, y)
+      else path.lineTo(x, y)
+    })
+    path.closePath()
+    return path
+  }
+
+  // Hard-edged per-cell fill onto the offscreen raw canvas, clipped to the
+  // wobbled boundary so no square cell corner can ever poke past the rim.
   _paintRawFill() {
     const ctx = this._rawCtx
     const cols = this._cols
     const px = this._pxPerCell
     const scratch = new THREE.Color()
     ctx.clearRect(0, 0, this._rawCanvas.width, this._rawCanvas.height)
+    ctx.save()
+    ctx.clip(this._outlineClipPath())
     for (let j = 0; j < cols; j++) {
       for (let i = 0; i < cols; i++) {
         const f = this._food[j * cols + i]
@@ -248,6 +296,7 @@ export class Patch {
         ctx.fillRect(i * px, j * px, px + 1, px + 1)
       }
     }
+    ctx.restore()
   }
 
   // Blurs the raw fill onto the visible texture so cell boundaries feather

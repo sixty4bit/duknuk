@@ -29,9 +29,9 @@ const STYLE_CSS = `
 }
 .duk-panel {
   background: var(--duk-cream);
-  border: 4px solid var(--duk-ink);
+  border: 3px solid var(--duk-ink);
   border-radius: 16px;
-  box-shadow: 3px 4px 0 var(--duk-ink);
+  box-shadow: 4px 5px 0 var(--duk-ink);
   color: var(--duk-ink);
   font-weight: 700;
   font-family: inherit;
@@ -41,7 +41,7 @@ const STYLE_CSS = `
   display: flex; align-items: center; gap: 10px;
   padding: 8px 18px 8px 8px;
   transform: rotate(-1deg);
-  animation: duk-pop-in 0.35s ease-out;
+  animation: duk-squash-in 0.4s ease-out;
 }
 .duk-coin {
   width: 40px; height: 40px; border-radius: 50%;
@@ -51,32 +51,43 @@ const STYLE_CSS = `
   box-shadow: inset 0 -3px 0 rgba(0,0,0,0.15);
 }
 .duk-coin.duk-bounce { animation: duk-coin-bounce 0.45s ease-out; }
-.duk-money-amount { font-size: 26px; letter-spacing: 0.5px; }
+.duk-money-amount {
+  /* heavy condensed display face — hand-inked title-card lettering, not a
+     default app sans. System font, no asset/load needed. */
+  font-family: Impact, 'Anton', 'Arial Narrow Bold', Haettenschweiler, sans-serif;
+  text-transform: uppercase;
+  font-size: 26px; letter-spacing: 0.8px;
+}
 .duk-money-amount.duk-bounce { animation: duk-text-bounce 0.35s ease-out; }
 .duk-hint {
-  position: fixed; bottom: 30px; left: 50%;
-  transform: translateX(-50%) rotate(0.6deg);
-  padding: 10px 22px 10px 34px; font-size: 15px; text-align: center;
-  max-width: 70vw;
-  animation: duk-pop-in 0.35s ease-out;
+  /* bottom-left, tucked into the same left-edge column as the money chip
+     above it — off the focal composition (fence line / patch) that
+     bottom-center used to sit on top of. */
+  position: fixed; bottom: 20px; left: 16px;
+  transform: rotate(-0.8deg);
+  padding: 10px 26px 10px 34px; font-size: 15px; text-align: left;
+  max-width: 40vw;
+  animation: duk-squash-in 0.4s ease-out;
 }
 .duk-hint::before {
-  /* speech-bubble tail, ink outline */
+  /* speech-bubble tail, ink outline — points right, toward the scene */
   content: '';
-  position: absolute; bottom: -15px; left: 40px;
+  position: absolute; top: 50%; right: -15px;
+  transform: translateY(-50%);
   width: 0; height: 0;
-  border-left: 11px solid transparent;
-  border-right: 5px solid transparent;
-  border-top: 17px solid var(--duk-ink);
+  border-top: 10px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 17px solid var(--duk-ink);
 }
 .duk-hint::after {
   /* tail cream fill, inset over the ink triangle */
   content: '';
-  position: absolute; bottom: -10px; left: 43px;
+  position: absolute; top: 50%; right: -10px;
+  transform: translateY(-50%);
   width: 0; height: 0;
-  border-left: 8px solid transparent;
-  border-right: 3px solid transparent;
-  border-top: 12px solid var(--duk-cream);
+  border-top: 7px solid transparent;
+  border-bottom: 3px solid transparent;
+  border-left: 12px solid var(--duk-cream);
 }
 .duk-hint-portrait {
   /* hangs outside the panel like a badge pinned to the corner, so it never
@@ -106,7 +117,13 @@ const STYLE_CSS = `
   border-right: 5px solid transparent;
   border-top: 6px solid #ffb238;
 }
-.duk-hint-text { position: relative; }
+.duk-hint-text {
+  position: relative;
+  /* heavy condensed display face — hand-inked title-card lettering */
+  font-family: Impact, 'Anton', 'Arial Narrow Bold', Haettenschweiler, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
 .duk-toasts {
   position: fixed; top: 16px; right: 16px; z-index: 10;
   display: flex; flex-direction: column; gap: 10px; align-items: flex-end;
@@ -144,6 +161,15 @@ const STYLE_CSS = `
   0% { opacity: 0; transform: scale(0.4) rotate(-8deg); }
   60% { opacity: 1; transform: scale(1.08) rotate(2deg); }
   100% { opacity: 1; transform: scale(1) rotate(var(--duk-rot, 0deg)); }
+}
+@keyframes duk-squash-in {
+  /* squash-and-stretch entrance: non-uniform scale overshoot, never a flat
+     fade — the one thing a cartoon never does. */
+  0% { opacity: 0; transform: scale(0.3, 1.5) rotate(-9deg); }
+  35% { opacity: 1; transform: scale(1.3, 0.7) rotate(3deg); }
+  55% { transform: scale(0.88, 1.15) rotate(-2deg); }
+  75% { transform: scale(1.06, 0.95) rotate(1deg); }
+  100% { transform: scale(1, 1) rotate(var(--duk-rot, 0deg)); }
 }
 @keyframes duk-pop-out {
   0% { opacity: 1; transform: scale(1) rotate(1.2deg); }

@@ -20,6 +20,10 @@ const P = {
   wood: 0xb07a3e,
   woodDark: 0x7d5228,
   dark: 0x2a1c10,
+  // Deep warm umber for interiors seen through an opening. Never P.dark: a
+  // near-black plate at this scale reads as a missing texture, and the darkest
+  // note in the frame has to be a deliberate anchor, not an accident.
+  loft: 0x3d2410,
   hay: 0xe8b23c,
   hayDark: 0xc7902a,
   pig: 0xf4a3b6,
@@ -389,12 +393,47 @@ function barnDoors() {
   return doors
 }
 
+// The loft opening was a flat dark plate stuck *in front of* a cream slab: the
+// single darkest region in the frame and the first thing the eye landed on, for
+// nothing. It is a real recess now — cream frame and a proud sill in front, warm
+// umber behind, and a beam, a bale and a spill of hay inside so it reads as
+// depth into a loft rather than a hole in the model.
+const LOFT = { y: 5.45, halfW: 0.86, halfH: 0.76, bar: 0.24, z: 4.4 }
+
+/** Four bars, not a slab, so the opening can sit recessed behind the trim. */
+function loftFrame() {
+  const frame = new THREE.Group()
+  const { y, halfW, halfH, bar, z } = LOFT
+  for (const s of [-1, 1]) {
+    frame.add(at(box(bar, (halfH + bar) * 2, 0.2, P.cream), (halfW + bar / 2) * s, y, z))
+    frame.add(at(box((halfW + bar) * 2, bar, 0.2, P.cream), 0, y + (halfH + bar / 2) * s, z))
+  }
+  // Sill proud of the wall: it catches the sun and drops a shadow into the hole.
+  frame.add(at(box((halfW + bar) * 2, 0.16, 0.52, P.cream), 0, y - halfH - 0.08, z + 0.16))
+  return frame
+}
+
+/** Umber void with things in it: collar beam, a bale on the sill, loose straw. */
+function loftInterior() {
+  const inside = new THREE.Group()
+  const { y, halfW, halfH } = LOFT
+  inside.add(at(box(halfW * 2 + 0.2, halfH * 2 + 0.2, 0.16, P.loft), 0, y, 4.15))
+  inside.add(at(box(halfW * 1.9, 0.18, 0.16, P.woodDark), 0, y + halfH * 0.62, 4.32))
+  inside.add(at(rot(box(0.95, 0.5, 0.34, P.hay), 0, 0.12, 0.07), -0.1, y - halfH + 0.27, 4.32))
+  for (const [x, yaw] of [[-0.5, 0.5], [0.15, -0.35], [0.62, 0.2]]) {
+    const straw = rot(spike(0.11, 0.55, P.hayDark, 6), 1.9, yaw, 0)
+    inside.add(at(straw, x, y - halfH + 0.06, 4.52))
+  }
+  return inside
+}
+
 function barnLoft() {
   const loft = new THREE.Group()
-  loft.add(at(box(2.2, 2.0, 0.2, P.cream), 0, 5.45, 4.36))
-  loft.add(at(box(1.72, 1.52, 0.2, P.dark), 0, 5.45, 4.44))
+  loft.add(loftInterior(), loftFrame())
+  // Hoist beam with a rope and block hanging off it, over the opening.
   loft.add(at(box(0.28, 0.28, 1.6, P.cream), 0, 6.8, 4.75))
-  loft.add(at(tube(0.045, 0.045, 0.55, P.dark, 6), 0, 6.4, 5.4))
+  loft.add(at(tube(0.045, 0.045, 0.6, P.woodDark, 6), 0, 6.38, 5.42))
+  loft.add(at(box(0.2, 0.26, 0.16, P.woodDark), 0, 6.0, 5.42))
   return loft
 }
 
@@ -609,18 +648,32 @@ function blobCanopy(rnd, [leaf, light], aspect) {
   return scl(canopy, aspect, 1 / Math.sqrt(aspect), aspect)
 }
 
-/** Tall narrow conifer: stacked cones, the vertical accent in a treeline. */
-function coniferCanopy(rnd, [leaf, light]) {
+/**
+ * Tall narrow conifer: stacked cones, the vertical accent in a treeline.
+ *
+ * Every tier is the SAME leaf tone. Alternating light/dark per tier made each
+ * cone one uniform flat colour and the whole tree a horizontal stripe pattern —
+ * a paper cutout with no core shadow and no rounded mass. With one tone the
+ * toon ramp carves the lit/shadow break, so value comes from the sun.
+ *
+ * Yaw, XZ offset, girth and tilt all move per tier, and the stack takes a
+ * per-instance girth/height, so the silhouette goes ragged instead of stacking
+ * perfectly symmetric triangles on one axis.
+ */
+function coniferCanopy(rnd, [leaf]) {
   const canopy = new THREE.Group()
   const tiers = 4 + Math.floor(rnd() * 2)
   let y = 0
   for (let i = 0; i < tiers; i++) {
     const t = i / tiers
-    const h = 1.6 - t * 0.25
-    canopy.add(at(spike(1.15 * (1 - t * 0.6), h, i % 2 ? leaf : light, 12), 0, y + h / 2, 0))
+    const h = (1.6 - t * 0.25) * (0.9 + rnd() * 0.26)
+    const r = 1.15 * (1 - t * 0.6) * (0.86 + rnd() * 0.32)
+    const cone = rot(spike(r, h, leaf, 9), (rnd() - 0.5) * 0.2, rnd() * Math.PI * 2, (rnd() - 0.5) * 0.2)
+    canopy.add(at(cone, (rnd() - 0.5) * 0.36, y + h / 2, (rnd() - 0.5) * 0.36))
     y += h * 0.52
   }
-  return canopy
+  const girth = 0.88 + rnd() * 0.34
+  return scl(canopy, girth, 1 + rnd() * 0.45, girth)
 }
 
 /** Low wide shrub mass: squats under the blobs and breaks up the skyline. */
@@ -650,8 +703,11 @@ function buildTree(seed) {
   const rnd = seeded(seed)
   const g = new THREE.Group()
   // Lean pivots at the roots and carries trunk and canopy together — a tree
-  // that leans only in the crown reads as a broken model, not as gesture.
-  const lean = rot(new THREE.Group(), 0, 0, (rnd() - 0.5) * 0.36)
+  // that leans only in the crown reads as a broken model, not as gesture. The
+  // yaw swings the lean to a random compass bearing (Euler XYZ applies Z first),
+  // so a row of them doesn't tip as one, and it spins each canopy's facets too.
+  // Set here rather than on the returned group: world.js owns that yaw.
+  const lean = rot(new THREE.Group(), 0, rnd() * Math.PI * 2, (rnd() - 0.5) * 0.4)
   const kind = TREE_KINDS[Math.floor(rnd() * TREE_KINDS.length)]
   const [base, span] = TRUNK_H[kind]
   const trunkH = base + rnd() * span
