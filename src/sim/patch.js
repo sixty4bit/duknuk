@@ -14,16 +14,18 @@ const RENDER_Y = 0.03
 const RING_COLOR = 0x2c4a1e
 // The patch boundary is the core mechanic's affordance — bolder than the
 // frame's default ink weight (toon.js INK_PIXELS) so it reads as the single
-// most legible line on screen, and wins against the ground it sits on via a
-// polygonOffset bias toward the camera (see the ink-shell tuning after
-// addOutline in _buildVisuals), not by disabling the depth test — real
-// geometry standing on the patch (chickens, the pig) must still occlude it.
+// most legible line on screen. Drawn via addOutline's `flat: true` path (the
+// same mechanism world.js uses to ink the road/rut boundary onto a flat
+// ground decal), which traces the literal open-edge boundary of the disc
+// geometry itself — see the addOutline call in _buildVisuals. Because the
+// ring is built FROM the disc's own geometry (not a separately-shaped wall),
+// fill and ring can never disagree about where the patch ends: no coincident
+// second shape to drift out of sync, no depth-order fight against the ground
+// decals it may sit over (decalMaterial's polygonOffset already wins against
+// both the road and the terrain — see toon.js). Depth test stays on via that
+// same mechanism — real geometry standing on the patch (chickens, the pig)
+// still occludes it.
 const RING_INK_PIXELS = 4
-// World-space height of the (invisible) rim wall used only to give the ink
-// outline real outward-facing normals to expand along — see buildWallGeometry.
-// Tall enough that the shell has real vertical body to read against the
-// ground on arcs where the wall runs near-tangent to the camera.
-const RING_WALL_HEIGHT = 0.35
 // Gaussian blur radius (in canvas px) applied over the raw cell fill so cell
 // boundaries feather instead of stair-stepping. At PIXELS_PER_CELL=24 there
 // is enough resolution for this to actually hide the per-cell grid.
@@ -159,35 +161,6 @@ function buildDiscGeometry(radius, centers) {
   return geo
 }
 
-// A thin, invisible standing wall traced exactly along the wobbled boundary.
-// It exists only so addOutline() has real outward-facing rim normals to
-// expand along — a flat disc's normals all point straight up, which gives the
-// ink shader nothing to push radially. The wall itself is never drawn (see
-// the colorWrite:false material in _buildVisuals); only its generated ink
-// shell is, which is what makes the ring hold constant screen-space
-// INK_PIXELS like every other outline in the frame instead of a constant
-// world-space thickness.
-function buildWallGeometry(centers, height) {
-  const positions = []
-  for (const [cx, cz] of centers) {
-    positions.push(cx, 0, cz, cx, height, cz)
-  }
-  const segments = centers.length - 1
-  const index = []
-  for (let s = 0; s < segments; s++) {
-    const a = s * 2
-    const b = a + 1
-    const c = a + 2
-    const d = a + 3
-    index.push(a, b, c, b, d, c)
-  }
-  const geo = new THREE.BufferGeometry()
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-  geo.setIndex(index)
-  geo.computeVertexNormals()
-  return geo
-}
-
 export class Patch {
   constructor(scene, world, center, radius) {
     this.scene = scene
@@ -255,65 +228,49 @@ export class Patch {
 
     // Same shading path as the ground beneath it (toon-lit, not unlit) so
     // "lush" and "grazed" land the same value/saturation logic as the field.
+    //
+    // polygonOffsetFactor/Units match world.js's road/rut decals (buildPathMesh)
+    // exactly, not just "some negative bias": those decals resolve who wins
+    // the ground purely by comparing equal offsets against actual world
+    // height (see buildWagonRuts — ruts sit higher than the road and win with
+    // the *same* offset the road uses). The disc previously carried a weaker
+    // -1/-1 bias than the road's -2/-2, so the artificial offset could beat
+    // the disc's real height advantage (RENDER_Y=0.03 vs the road's y≈0.02)
+    // and the fill vanished under the road — the critic's "hose with nothing
+    // attached" regression. Matching the road's own offset restores height as
+    // the tiebreaker, so the disc's extra 0.01 legitimately wins.
     const mat = toonMaterial(0xffffff, {
       steps: 3,
       map: this._texture,
       transparent: true,
       polygonOffset: true,
-      polygonOffsetFactor: -1,
-      polygonOffsetUnits: -1,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
     })
     this._discMesh = new THREE.Mesh(buildDiscGeometry(this.radius, outline), mat)
     this._discMesh.renderOrder = 5
     this.group.add(this._discMesh)
 
-    // Invisible rim wall, ink-shelled via addOutline() so the boundary ring
-    // holds a constant on-screen INK_PIXELS weight like every other outline
-    // in the frame, instead of a constant world-space ribbon thickness.
-    const wallMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false })
-    this._wallMesh = new THREE.Mesh(buildWallGeometry(outline, RING_WALL_HEIGHT), wallMat)
-    this._wallMesh.renderOrder = 6
-    this.group.add(this._wallMesh)
-    addOutline(this._wallMesh, { color: RING_COLOR, pixels: RING_INK_PIXELS })
-    // The generated ink shell inherits toon.js's default polygonOffset
-    // (factor +1), which pushes it *away* from the camera — backwards for a
-    // decal that must always win against the ground surface it sits on. But
-    // disabling depth testing outright (the previous fix here) made the ring
-    // draw THROUGH anything standing on the patch — a chicken or pig on the
-    // grass would get a dark band cut across its body. Depth test must stay
-    // on so real geometry standing on the patch still occludes the ring;
-    // what the ring needs is only to win against the *ground* it sits on,
-    // which polygonOffset (pulled toward the camera, same treatment as
-    // _discMesh above) plus renderOrder already achieves without touching
-    // depth testing at all.
-    this._wallMesh.traverse((o) => {
-      if (!o.userData.isOutline) return
-      o.material.depthTest = true
-      o.material.depthWrite = false
-      o.material.polygonOffset = true
-      o.material.polygonOffsetFactor = -2
-      o.material.polygonOffsetUnits = -2
-      // The rim wall is an open tube (no top/bottom caps): on a closed hull
-      // BackSide alone would work, but here the near half's quads face the
-      // camera and get culled outright, leaving only the far arc inked. This
-      // is a UI-grade decal, not a lit 3D edge, so draw both winding
-      // directions instead of relying on hull closure.
-      o.material.side = THREE.DoubleSide
-      o.renderOrder = 6
-    })
+    // Boundary ring via addOutline's `flat: true` path (toon.js) — the same
+    // mechanism world.js uses to ink the road/rut edge onto a flat ground
+    // decal. This traces the LITERAL open-edge boundary of the disc geometry
+    // just built (buildDiscGeometry's outer rim edges, each used by exactly
+    // one fan triangle), so the ring is not a second shape that could drift
+    // out of sync with the fill — it IS the fill's own edge. Its decal
+    // material (toon.js) carries a polygonOffset far deeper than either the
+    // disc's or the road's, tuned specifically to beat both the decal it
+    // rims and the terrain under it, so it wins against the road even on
+    // arcs where the fill's own offset match above only ties.
+    addOutline(this._discMesh, { color: RING_COLOR, pixels: RING_INK_PIXELS, flat: true })
   }
 
   _disposeVisuals() {
     if (this._discMesh) {
       this.group.remove(this._discMesh)
-      this._discMesh.geometry.dispose()
-      this._discMesh.material.dispose()
-    }
-    if (this._wallMesh) {
-      this.group.remove(this._wallMesh)
-      // Includes the addOutline() ink shell child — each shell owns its own
-      // material/geometry (see toon.js), so both must be disposed here.
-      this._wallMesh.traverse((o) => {
+      // Traverses the disc mesh AND its addOutline-added flat ink-ring child
+      // — each shell owns its own material/geometry (see toon.js), so both
+      // must be disposed here.
+      this._discMesh.traverse((o) => {
         o.geometry?.dispose()
         o.material?.dispose()
       })

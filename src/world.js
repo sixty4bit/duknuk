@@ -372,19 +372,23 @@ function drawCloudShape(ctx, cx, cy, s, { alpha = 0.94, fill = '#fffaf2' } = {})
  * than copying these numbers forward blind — that is exactly how this band
  * went stale the first time.
  *
- * Also bumped from 2 far/3 near clouds at 12-22px to 3 far/4 near at 18-34px
- * (near) / 9-17px (far, half scale) — the old count/size was a smudge at
- * FOV 30 on a 1024px dome. A far rank (half scale, greyer, lower alpha) sits
- * behind a near rank (full scale/alpha) so the two ranks read as depth
- * instead of one flat layer, and a minimum angular separation keeps real sky
- * visible between every cloud. */
+ * Critic defect 1 (this pass): the old 8-puff count (3 far + 4 near + 1 extra)
+ * was tuned to compete with the now-deleted 3D buildCloud() meshes for
+ * presence; with those gone, this is the sky's ONLY cloud system, and 8
+ * puffs packed into two thin elevation bands read as one continuous smear
+ * rather than "three to four clouds with clear sky between them." Cut to 2
+ * far + 2 near (four total) and the minimum separation widened so each puff
+ * reads as its own painted shape.
+ *
+ * A far rank (half scale, greyer, lower alpha) sits behind a near rank (full
+ * scale/alpha) so the two ranks read as depth instead of one flat layer. */
 function drawPaintedClouds(ctx, w, h) {
   const rnd = seededRand(99)
   const accepted = []
   const place = (scale, cyMin, cyMax, opts) => {
     for (let tries = 0; tries < 24; tries++) {
       const cx = rnd() * w
-      const minSep = scale * 2.5
+      const minSep = scale * 4.2
       const clash = accepted.some((a) => Math.min(Math.abs(a - cx), w - Math.abs(a - cx)) < minSep)
       if (clash) continue
       accepted.push(cx)
@@ -402,19 +406,13 @@ function drawPaintedClouds(ctx, w, h) {
   // cumulus) to the same near-white as the near rank, alpha lifted so the
   // ink edge and warm underside drawCloudShape now adds still read at this
   // half scale instead of washing out.
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 2; i++) {
     const nearScale = 18 + rnd() * 16
     place(nearScale * 0.5, 0.42, 0.462, { alpha: 0.78, fill: '#f7f1e6' })
   }
-  for (let i = 0; i < 4; i++) {
-    place(18 + rnd() * 16, 0.462, 0.495)
+  for (let i = 0; i < 2; i++) {
+    place(18 + rnd() * 16, 0.462, 0.495, { alpha: 0.94, fill: '#fffaf2' })
   }
-  // One more, deliberately left of frame centre — the ranks above are free
-  // to cluster anywhere `place`'s separation check allows, and a sky with
-  // all its incident on one side reads as one dominant puff, not a rhythm.
-  const leftCx = w * (0.06 + rnd() * 0.1)
-  const leftCy = h * (0.465 + rnd() * 0.022)
-  drawCloudShape(ctx, leftCx, leftCy, 20 + rnd() * 8, { alpha: 0.94, fill: '#fffaf2' })
 }
 
 /** Backdrop painted as a theatrical set piece: gradient sky, a warm haze band,
@@ -474,9 +472,35 @@ function buildSkyTexture() {
   // bump on a 1024px texture, a hairline at the default camera; the fog
   // gradient was doing all the "distance" work the painted backdrop was
   // written to do.
-  drawSilhouetteBand(ctx, w, horizonY - h * 0.015, horizonY - h * 0.001, '#7d95a8', 5, h * 0.005) // far hill
-  drawSilhouetteBand(ctx, w, horizonY - h * 0.005, horizonY + h * 0.005, '#5a7263', 8, h * 0.016) // mid ridge
-  drawSilhouetteBand(ctx, w, h * 0.508 - h * 0.013, h * 0.508 + h * 0.006, '#3c5240', 7, h * 0.03) // near treeline
+  // Critic defect 3: the hill bands (far hill + mid ridge) sat close enough
+  // in value to the near-treeline band — and to the ACTUAL 3D treeline mesh
+  // ranks fogged out near the same depth (_placeTreeline) — that the whole
+  // background resolved as one muddy blue-gray mass with no drawn ridge line.
+  // Both hill colors lifted ~15% lighter and desaturated further (0.75x/0.6x
+  // saturation) with a small hue push toward blue (cooler), computed off the
+  // ORIGINAL colors below so the relationship stays legible if either is
+  // retuned again:
+  //   far hill  #7d95a8 (L57%) -> #9ca8b5 (L66%)
+  //   mid ridge #5a7263 (L40%) -> #7c8d8a (L52%)
+  // The near treeline is held, not lifted — nudged a touch darker (L28% ->
+  // L26%) so it still reads a full value step (>20 points) below the new
+  // mid-ridge value instead of the two nearly touching.
+  drawSilhouetteBand(ctx, w, horizonY - h * 0.015, horizonY - h * 0.001, '#9ca8b5', 5, h * 0.005) // far hill
+  drawSilhouetteBand(ctx, w, horizonY - h * 0.005, horizonY + h * 0.005, '#7c8d8a', 8, h * 0.016) // mid ridge
+  drawSilhouetteBand(ctx, w, h * 0.508 - h * 0.013, h * 0.508 + h * 0.006, '#374b3b', 7, h * 0.03) // near treeline
+  // Critic defect 3: the near-treeline band's flat fill used to cut straight
+  // to the fog-tinted ground below it with no transition — a hard horizontal
+  // seam exactly where the painted hills meet the field. One soft gradient
+  // wash laid across that seam (treeline color fading through a light warm
+  // haze tone and back to nothing) blurs the join into atmosphere instead of
+  // a drawn line, the way a painted flat's far edge would actually recede.
+  const seamY = h * 0.508 + h * 0.006
+  const seamHaze = ctx.createLinearGradient(0, seamY - h * 0.008, 0, seamY + h * 0.026)
+  seamHaze.addColorStop(0, 'rgba(55,75,59,0)')
+  seamHaze.addColorStop(0.35, 'rgba(214,214,188,0.4)')
+  seamHaze.addColorStop(1, 'rgba(214,214,188,0)')
+  ctx.fillStyle = seamHaze
+  ctx.fillRect(0, seamY - h * 0.008, w, h * 0.034)
   drawPaintedClouds(ctx, w, h)
   const tex = new THREE.CanvasTexture(canvas)
   if ('colorSpace' in tex) tex.colorSpace = THREE.SRGBColorSpace
@@ -493,30 +517,19 @@ function buildSkyDome() {
   return dome
 }
 
-function buildCloud() {
-  const group = new THREE.Group()
-  const mat = toonMaterial(0xfff8ec, { steps: 3 })
-  const puffs = [
-    { x: 0, y: 0, z: 0, r: 3.2 },
-    { x: 2.6, y: 0.35, z: 0.3, r: 2.2 },
-    { x: -2.6, y: 0.3, z: -0.2, r: 2.3 },
-    { x: 0.8, y: 1.1, z: 0.6, r: 1.8 },
-    { x: -1.1, y: 1.0, z: -0.5, r: 1.9 },
-  ]
-  for (const p of puffs) {
-    const puff = new THREE.Mesh(new THREE.SphereGeometry(p.r, 12, 10), mat)
-    puff.position.set(p.x, p.y, p.z)
-    group.add(puff)
-  }
-  addOutline(group, { color: 0x1a1208, thickness: 0.05 })
-  group.traverse((o) => {
-    if (o.isMesh) {
-      o.castShadow = false
-      o.receiveShadow = false
-    }
-  })
-  return group
-}
+// Critic defect 1 (this pass): buildCloud() built a real 3D mesh — five
+// overlapping toon-shaded spheres, each carrying its own inverted-hull
+// outline shell — and _buildSky used to scatter six of them into the scene.
+// At the distances/scales that put them in frame, perspective flattened the
+// sphere cluster into an ellipse while the five separate outline shells (one
+// per overlapping sphere) stayed visible as concentric rings through it —
+// exactly the "blurred white ellipse with its own overlapping construction
+// rings" the critic flagged as the loudest non-cartoon element in the frame.
+// Deleted outright rather than retuned: a painted 2D silhouette (drawCloudShape,
+// baked into the sky dome by drawPaintedClouds below) already draws a hard
+// silhouette edge, one ink outline and one warm underside value with zero
+// blur, which is what a golden-age backdrop cloud actually looks like — a
+// second, independent 3D system doing the same job can only fight it.
 
 // --------------------------------------------------------- contact shadows
 
@@ -1056,26 +1069,76 @@ function buildCropPatch(seed = 1, withFruit = false) {
 
 // -------------------------------------------------------------------- pond
 
-/** Small cool-complement accent — a painted water disc with an ink rim so the
- * field has a saturated blue note to sit against, not just green everywhere.
- * The rim is a slightly-larger dark disc peeking out from under the water,
- * not an inverted-hull outline: a flat circle's vertex normals are all
- * identical (straight up), so a normal-offset hull just shifts the whole
- * disc rather than expanding its edge — the same defect the path had. */
+/** A shoreline cluster of thin reed blades — the detail that makes a puddle
+ * of color read as "edge of water" rather than the water having no edge at
+ * all. Reused INK_WEIGHT.PROP (same weight buildGrassTuft takes) rather than
+ * DECAL — these are small vertical props standing IN the scene, not a ground
+ * decal like the pond's own water surface. */
+function buildReedTuft(seed) {
+  const rnd = seededRand(seed)
+  const g = new THREE.Group()
+  const bladeMat = toonMaterial(0x6f8a3a, { steps: 3 })
+  const tipMat = toonMaterial(0x8a6a3a, { steps: 2 })
+  const count = 3 + Math.floor(rnd() * 2)
+  for (let i = 0; i < count; i++) {
+    const a = rnd() * Math.PI * 2
+    const r = rnd() * 0.12
+    const h = 0.6 + rnd() * 0.5
+    const blade = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.035, h, 5), bladeMat)
+    blade.position.set(Math.cos(a) * r, h / 2, Math.sin(a) * r)
+    blade.rotation.set((rnd() - 0.5) * 0.3, 0, (rnd() - 0.5) * 0.3)
+    g.add(blade)
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.16, 5), tipMat)
+    tip.position.set(Math.cos(a) * r, h + 0.06, Math.sin(a) * r)
+    g.add(tip)
+  }
+  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+}
+
+/** Small cool-complement accent — a painted water disc so the field has a
+ * saturated blue note to sit against, not just green everywhere.
+ *
+ * Critic defect 5: was a flat, perfectly circular cyan ellipse with a
+ * lighter inner ellipse — no ink, no shoreline, no reeds, the only object in
+ * the frame with zero drawn line on it, which read as a hole in the render
+ * rather than water. Rebuilt on three fixes at once: (1) the water's own
+ * silhouette now carries the same DECAL-weight ink the road takes
+ * (addOutline's flat path, INK_WEIGHT.DECAL — see buildPathMesh for the
+ * precedent); (2) a wobbled (buildWobbledDiscGeometry, not a plain
+ * CircleGeometry) muddy shoreline disc sits under the water so the pond's
+ * overall silhouette is an irregular shore, not a geometric ellipse; (3) a
+ * handful of reed tufts break the shoreline on the near (camera-facing) arc. */
 function buildPond(radius) {
   const g = new THREE.Group()
-  const rim = new THREE.Mesh(new THREE.CircleGeometry(radius * 1.08, 28), toonMaterial(0x1a1208, { steps: 2 }))
-  rim.rotation.x = -Math.PI / 2
-  rim.position.y = 0.025
-  g.add(rim)
-  const water = new THREE.Mesh(new THREE.CircleGeometry(radius, 28), toonMaterial(0x4a9fc9, { steps: 3 }))
-  water.rotation.x = -Math.PI / 2
+  const mudGeo = buildWobbledDiscGeometry(radius * 1.24, 24, 0.16)
+  mudGeo.rotateX(-Math.PI / 2)
+  const mud = new THREE.Mesh(mudGeo, toonMaterial(0x6b4a2a, { steps: 2 }))
+  mud.position.y = 0.022
+  mud.receiveShadow = true
+  g.add(mud)
+
+  const waterGeo = buildWobbledDiscGeometry(radius, 24, 0.08)
+  waterGeo.rotateX(-Math.PI / 2)
+  const water = new THREE.Mesh(waterGeo, toonMaterial(0x4a9fc9, { steps: 3 }))
   water.position.y = 0.04
+  addOutline(water, { flat: true, pixels: INK_WEIGHT.DECAL })
   g.add(water)
+
   const highlight = new THREE.Mesh(new THREE.CircleGeometry(radius * 0.5, 22), toonMaterial(0x7ecbe8, { steps: 2 }))
   highlight.rotation.x = -Math.PI / 2
   highlight.position.set(radius * 0.18, 0.045, -radius * 0.12)
   g.add(highlight)
+
+  // Reed tufts on the near (camera-facing, +z-ish) arc of the shoreline only
+  // — reeds ringing the whole pond would read as a hedge, not a shore detail.
+  const rnd = seededRand(3301)
+  for (let i = 0; i < 4; i++) {
+    const a = Math.PI * 0.1 + rnd() * Math.PI * 0.55
+    const rr = radius * (0.92 + rnd() * 0.22)
+    const tuft = buildReedTuft(3302 + i)
+    tuft.position.set(Math.cos(a) * rr, 0, Math.sin(a) * rr)
+    g.add(tuft)
+  }
   return g
 }
 
@@ -1121,28 +1184,12 @@ export class World {
     return 0
   }
 
+  /** Critic defect 1: the 3D buildCloud() meshes formerly scattered here are
+   * gone (see the comment where buildCloud used to live). Clouds now come
+   * exclusively from drawPaintedClouds, baked flat into buildSkyTexture — a
+   * single painted-backdrop system instead of a 3D one fighting a 2D one. */
   _buildSky() {
     this.scene.add(buildSkyDome())
-    // Far and high: radius 130..190 keeps every cloud well past the treeline
-    // so none can loom prop-sized over the field; y 20..30 at that distance
-    // subtends roughly +2..+6deg from the default camera — inside the sky band
-    // but above the painted ridge. (y=4..9 at radius 55..90 put whole clouds
-    // ON the lawn; a ~14-unit puff 60 units out filled a third of the frame.)
-    const spots = [
-      { x: -120, y: 22, z: -95, s: 1.4, ry: 0.4 },
-      { x: -55, y: 25, z: -150, s: 1.7, ry: 1.1 },
-      { x: 40, y: 28, z: -165, s: 1.2, ry: 2.3 },
-      { x: 130, y: 24, z: -80, s: 1.5, ry: 3.0 },
-      { x: 165, y: 21, z: 30, s: 1.1, ry: 0.7 },
-      { x: -150, y: 26, z: 40, s: 1.3, ry: 2.0 },
-    ]
-    for (const spot of spots) {
-      const cloud = buildCloud()
-      cloud.position.set(spot.x, spot.y, spot.z)
-      cloud.scale.set(spot.s, spot.s * 0.55, spot.s)
-      cloud.rotation.y = spot.ry
-      this.scene.add(cloud)
-    }
   }
 
   _buildLights() {
@@ -1232,10 +1279,20 @@ export class World {
    * the barn. */
   _placeGroundValueShapes() {
     this.scene.add(buildWobblyGroundBlob(-16, -13, 12, 0x4d7a35, 711))
+    // Critic defect 4: this shape IS "the yard" — it covers the open ground
+    // between coop and barn, the largest area in frame and exactly where the
+    // player is looking. It was a washed-out yellow-green (0xcfe08c, L71%
+    // H72deg) close enough in both hue and value to the surrounding field
+    // bands (FIELD_BANDS, H~86deg) that the yard/lawn boundary read as haze
+    // rather than a drawn edge. Recolored to a genuinely warm, saturated
+    // ochre-cream (H~40deg vs the field's ~86deg — a real hue break, not just
+    // a value one) and lifted further in value so the gap to the field bands
+    // it sits against (L~49-58%) is comfortably more than two of
+    // FIELD_BANDS' own ~10%-value steps.
     this.scene.add(
       buildFlatGroundShape(
         [{ x: -4, z: 8 }, { x: 10, z: 6 }, { x: 14, z: -6 }, { x: 2, z: -10 }, { x: -6, z: -4 }],
-        0xcfe08c
+        0xf3ce85
       )
     )
   }
@@ -1275,6 +1332,13 @@ export class World {
     return mesh
   }
 
+  /** Critic defect 2: this used _addToScene, which never calls
+   * _addContactShadow — every fence in the picture (the paddock AND the
+   * converging fence line _placeMidDistanceBackdrop runs out through the
+   * midfield) sat on the ground with zero cast shadow, one of the concrete
+   * "zero incident" gaps in that dead band. Each post along the run now gets
+   * the same painted contact shadow every other obstacle gets, reusing the
+   * same post-spacing loop that already builds the walkability circles. */
   _placeFenceLine(length, x, z, rotY) {
     this._addToScene(makeFence(length), x, z, rotY)
     // a straight fence isn't one blocking circle: approximate it with a
@@ -1282,7 +1346,10 @@ export class World {
     const steps = Math.max(2, Math.round(length / 3))
     for (let i = 0; i <= steps; i++) {
       const t = (i / steps - 0.5) * length
-      this.addObstacle(x + Math.cos(rotY) * t, z - Math.sin(rotY) * t, 0.55)
+      const px = x + Math.cos(rotY) * t
+      const pz = z - Math.sin(rotY) * t
+      this.addObstacle(px, pz, 0.55)
+      this._addContactShadow(px, pz, 0.4)
     }
   }
 
@@ -1542,9 +1609,17 @@ export class World {
   /** Cool complement placed before the rock/flower scatter passes so their
    * _findScatterSpot obstacle-avoidance keeps clear of it automatically.
    * Pulled inward (was -20,-3, out where fog ate it) so the left midfield
-   * carries real mass at readable scale. */
+   * carries real mass at readable scale.
+   *
+   * Critic defect 5 (this pass): at x=-14 the pond's own western edge
+   * (radius 3.2, plus the new wobbled mud shoreline's ~1.24x/1.16 worst-case
+   * reach) landed past the start camera's left frustum edge at this depth —
+   * per the START-VIEW wedge measured at the top of this file, the visible
+   * boundary at z=-6 is x~-16.1, and the old pond's western extent reached
+   * ~-17.5. Shifted +3 on x so the whole shoreline sits inside the frame
+   * with margin instead of grazing the crop. */
   _placePond() {
-    const x = -14
+    const x = -11
     const z = -6
     const r = 3.2
     this._addToScene(buildPond(r), x, z, 0)
@@ -1583,7 +1658,10 @@ export class World {
    * radius (see _placeCoopYard) so the hero hen — spawned at the door by
    * main.js — owns her own negative space. */
   _placeDecorAnimals() {
-    this._placeDecor(makePeckingHen(), -9, -6, 0.35, 1.4) // pond bank
+    // pond bank: shifted +3 on x alongside _placePond's defect-5 move so it
+    // stays clear of the pond's new mud shoreline (center now -11,-6) while
+    // still reading as standing at its edge.
+    this._placeDecor(makePeckingHen(), -6, -6, 0.35, 1.4) // pond bank
     this._placeDecor(makePeckingHen(), 2, -3, 0.35, -2.0) // crop beds
   }
 

@@ -156,6 +156,38 @@ function useColouredRamp(shader) {
   }
 }
 
+/**
+ * Cast shadows get the same treatment as the light ramp: ONE hard step.
+ *
+ * The toon ramp only quantises the diffuse term. The shadow map is multiplied
+ * in afterwards as a raw float, and three's PCF filter averages 9 depth taps —
+ * so every cast shadow in the frame arrives as a soft dithered gradient laid
+ * over flat cel colour. That gradient is the single loudest "generic low-poly
+ * mobile game" tell there is: a golden-age flat has a shadow with a decisive
+ * edge you could cut out with scissors.
+ *
+ * `step(0.5, shadow)` says: more than half the taps occluded, it's shadow;
+ * otherwise it's light. Nothing interpolates across the boundary, so no
+ * dithered ramp survives to the framebuffer no matter what shadow-map size or
+ * filter type the renderer is configured with.
+ *
+ * Both getShadow and getPointShadow end on this line; both are replaced.
+ */
+const SOFT_SHADOW = 'return mix( 1.0, shadow, shadowIntensity );'
+const HARD_SHADOW = 'return mix( 1.0, step( 0.5, shadow ), shadowIntensity );'
+
+function useHardShadows(shader) {
+  if (!shader.fragmentShader.includes(SOFT_SHADOW)) return
+  shader.fragmentShader = shader.fragmentShader.split(SOFT_SHADOW).join(HARD_SHADOW)
+}
+
+/** Every toon material shares this hook, so the whole frame is posterized the
+ *  same way: coloured ramp for the light, one hard step for the shadow. */
+function patchToonShader(shader) {
+  useColouredRamp(shader)
+  useHardShadows(shader)
+}
+
 const rampCacheKey = () => 'duknuk-rgb-ramp'
 
 /**
@@ -167,7 +199,7 @@ const rampCacheKey = () => 'duknuk-rgb-ramp'
  */
 export function toonMaterial(color, { steps = 4, ...rest } = {}) {
   const mat = new THREE.MeshToonMaterial({ color, gradientMap: gradientMap(steps), ...rest })
-  mat.onBeforeCompile = useColouredRamp
+  mat.onBeforeCompile = patchToonShader
   mat.customProgramCacheKey = rampCacheKey
   return mat
 }

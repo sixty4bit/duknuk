@@ -19,10 +19,10 @@ app.appendChild(renderer.domElement)
 
 const scene = new THREE.Scene()
 const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.5, 600)
-camera.position.set(-1, 8.0, 20)
+camera.position.set(-3, 6.5, 20)
 
 const controls = new OrbitControls(camera, renderer.domElement)
-controls.target.set(0, 2.5, -8)
+controls.target.set(1, 1.2, -8)
 controls.enableDamping = true
 controls.maxPolarAngle = Math.PI * 0.46
 controls.minPolarAngle = Math.PI * 0.34

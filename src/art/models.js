@@ -25,6 +25,16 @@ const P = {
    * give the two biggest planes on the biggest object in the frame.
    */
   barnRoof: 0x741c14,
+  /**
+   * The UPPER (shallow) gambrel pitch, a full value step over the lower one.
+   *
+   * A gambrel carried by a hairline crease on one flat red mass is one shape
+   * with a line drawn on it. Two pitches painted two values is two shapes, and
+   * that reads from across the field even when the crease is a pixel wide. The
+   * shallow pitch faces more sky, so it is the lighter of the two: wall
+   * (0xc8352b) > upper roof > lower roof, a clean three-rung ladder.
+   */
+  barnRoofUp: 0xa8301f,
   cream: 0xfff4d6,
   wood: 0xb07a3e,
   woodDark: 0x7d5228,
@@ -35,11 +45,28 @@ const P = {
   loft: 0x3d2410,
   hay: 0xe8b23c,
   hayDark: 0xc7902a,
-  pig: 0xf4a3b6,
+  /**
+   * A step lighter than she used to be (0xf4a3b6).
+   *
+   * The gag is a pig lying across the road, and the road is warm dirt. At the
+   * old value the pink sat inside a hair of the dirt's, so the animal fused
+   * with the ground and the obstacle never read. Pushed up, she separates from
+   * the road on VALUE, which is the only separation that survives at 50 m.
+   */
+  pig: 0xf9b9c8,
   pigDark: 0xd97e96,
   // Warm mid-brown, not near-black: dark hooves under a belly read as four
   // planted boots and stand the animal back up.
-  hoof: 0x6b4a2e,
+  hoof: 0x7b5637,
+  /**
+   * Interior feather ink — a full step lighter than the silhouette's 0x1a1208.
+   *
+   * A drawn cel never details a form in the same weight it contoured it with:
+   * the moment a wing bar is as black as the outline, it stops being feathers
+   * and becomes a scratch, a censor bar or a texture glitch. This is warm
+   * brown, so on cream plumage it reads as a drawn stroke rather than a hole.
+   */
+  featherInk: 0x8a6338,
   leaf: 0x4fa33c,
   leafLight: 0x74c94b,
   trunk: 0x8a5a2e,
@@ -59,7 +86,13 @@ const P = {
   // ONE blue for every body of water on the farm. The trough used to be a cyan
   // 0x5fb8d6 lid next to a 0x4a9fc9 pond, which is two different liquids in one
   // frame; a cartoon farm has one water colour and one highlight on it.
-  water: 0x4a9fc9,
+  water: 0x3d86ad,
+  // The shaded body of the water, against the wall it is held in. A container
+  // of water is two tones and a line; a single flat plate on top of a box is a
+  // plastic lid, which is exactly what the trough read as.
+  waterDeep: 0x2b6787,
+  // The lit plane of the same liquid. Kept bright, because a cel draws still
+  // water as two tones and a line, and the line is the glare streak.
   waterLight: 0x8ed3ea,
   mud: 0x9b7c4a,
 }
@@ -163,10 +196,30 @@ const clockNow = () =>
 // The comb, beak, wattles and feet are the only saturated red/orange in the
 // hen. They are the handles the eye grabs to find her, so they are drawn well
 // past life-size relative to the skull.
+/**
+ * Lobes as [y, z, height], and why they all sit forward of the skull's centre.
+ *
+ * The comb is the hen's primary silhouette identifier — it is the shape that
+ * says "chicken" before the beak, the tail or the colour do. Sat level on top
+ * of a sphere it reads as a red growth on the back of her neck in three-
+ * quarter, because the skull's own mass hides everything behind its crown.
+ * The crest has to LEAD the head: the tallest lobe overhangs the brow, the
+ * front lobe cantilevers out past the skull entirely (z 0.235 + the group's
+ * 0.05 against a 0.175 radius), and every lobe is raked forward so the whole
+ * crest points where she is going.
+ */
+const COMB_LOBES = [[0.075, 0.235, 1.3], [0.115, 0.105, 1.55], [0.08, -0.025, 1.3]]
+const COMB_RAKE = -0.3
+
 function henComb() {
   const comb = new THREE.Group()
-  for (const [y, z] of [[0.06, 0.115], [0.105, 0], [0.055, -0.115]]) {
-    comb.add(at(scl(ball(0.095, P.comb, 14), 0.5, 1.5, 1.0), 0, y, z))
+  // One continuous blade under the points, raked down at the front so it lands
+  // on the brow. A comb is a single crest with points cut into it; three loose
+  // blobs perched on a skull leave the forward point floating in air the moment
+  // the crest is pushed far enough forward to actually lead the head.
+  comb.add(at(rot(scl(ball(0.115, P.comb, 14), 0.42, 0.5, 1.55), -0.18, 0, 0), 0, 0.02, 0.09))
+  for (const [y, z, tall] of COMB_LOBES) {
+    comb.add(at(rot(scl(ball(0.096, P.comb, 14), 0.5, tall, 1.0), COMB_RAKE, 0, 0), 0, y, z))
   }
   return comb
 }
@@ -174,7 +227,9 @@ function henComb() {
 function henHead() {
   const head = new THREE.Group()
   head.add(ball(0.175, P.hen))
-  const comb = at(henComb(), 0, 0.14, 0.01)
+  // Forward along the head's +Z, not centred on the crown: the crest overhangs
+  // the brow and the beak root, so it leads the head from any angle.
+  const comb = at(henComb(), 0, 0.125, 0.05)
   head.add(comb)
   head.add(at(rot(spike(0.082, 0.27, P.beak, 10), Math.PI / 2), 0, -0.02, 0.26))
   head.add(at(ball(0.062, P.comb, 12), 0, -0.11, 0.15))
@@ -187,16 +242,41 @@ function henHead() {
   return head
 }
 
-/** Two feather breaks raked across the wing. Without them the wing is a cream
+/**
+ * Feather strokes: [length, butt radius, y, z, rake].
+ *
+ * They used to be three ink slabs of uniform width in the silhouette's own
+ * black — three heavy bars across a cream flank, which is a censor bar, not a
+ * wing. A drawn feather is a TAPERED stroke: fat where the quill leaves the
+ * shoulder, thin to nothing at the tip, laid along the arc of the wing rather
+ * than square across it, and always a weight lighter than the contour that
+ * cuts the bird out of the sky. Cones give the taper for free.
+ */
+const WING_FEATHERS = [
+  [0.24, 0.05, -0.015, 0.06, 0.2],
+  [0.28, 0.044, -0.1, 0.03, 0.1],
+  [0.23, 0.036, -0.185, -0.01, 0.0],
+]
+
+/** One tapered stroke, flattened to a blade and pointed down the wing's trailing
+ *  edge. Pierces the plumage instead of floating on it, so it stays welded to a
+ *  curved surface at every camera angle. */
+function featherStroke([len, r, y, z, rake], side) {
+  const blade = scl(spike(r, len, P.featherInk, 6), 0.3, 1, 1)
+  // Apex to -Z (the tail) so the stroke thins toward its tip, then raked so
+  // the three of them fan along the wing's curve instead of running parallel.
+  const stroke = rot(detail(blade), -Math.PI / 2 + rake, 0.12 * side, 0)
+  return at(stroke, 0.05 * side, y, z - len * 0.18)
+}
+
+/** Wing mass plus three drawn feather strokes. Without them the wing is a cream
  *  blob on a cream body, separated by a value step the toon ramp may not even
  *  make — the one place a cel drawing would never leave the pen up. */
 function henWing(side) {
   const wing = at(new THREE.Group(), 0.27 * side, 0.05, -0.02)
   wing.add(at(scl(ball(0.17, P.hen, 16), 0.3, 0.82, 1.05), 0.015 * side, -0.1, 0))
   wing.add(at(scl(ball(0.095, P.henShade, 12), 0.3, 0.85, 1.1), 0.02 * side, -0.21, -0.07))
-  for (const [y, tilt] of [[-0.055, 0.22], [-0.152, 0.15]]) {
-    wing.add(at(rot(inkSlab(0.09, 0.026, 0.2), tilt, 0, 0), 0.035 * side, y, -0.01))
-  }
+  for (const feather of WING_FEATHERS) wing.add(featherStroke(feather, side))
   return wing
 }
 
@@ -220,26 +300,84 @@ function henTail() {
   return tail
 }
 
-function henLeg(side) {
-  const leg = at(new THREE.Group(), 0.11 * side, 0.32, 0.02)
-  leg.add(at(tube(0.042, 0.05, 0.32, P.beak, 8), 0, -0.16, 0))
-  const foot = at(new THREE.Group(), 0, -0.32, 0)
-  foot.add(at(box(0.15, 0.06, 0.15, P.beak), 0, 0.03, 0.02))
-  for (const a of [-0.6, 0, 0.6]) {
-    foot.add(at(rot(box(0.065, 0.055, 0.24, P.beak), 0, a, 0), Math.sin(a) * 0.075, 0.03, 0.12))
+/**
+ * The leg, and why the foot used to come off.
+ *
+ * The rig pivots each leg at the hip and the animator swings it ±0.55 rad,
+ * while the body bobs and squashes on its own track. With a 4 cm shank and a
+ * body whose underside hung to within 0.04 of the hip, the only part of the
+ * limb outside the torso silhouette was the FOOT — so on the hero character,
+ * at hero scale, you got an orange talon sitting on the road with a gap where
+ * her leg should be. Three things fix it and all three are geometry:
+ *
+ * - one shank segment that SPANS hip to foot (0.34 long against a 0.32 drop,
+ *   so it overlaps the pivot and can never shorten out of the socket),
+ * - fat enough to survive the ink hull at viewing size (0.062 → 0.07, up from
+ *   0.042 → 0.05), with a drawn hock knuckle so it reads as a jointed limb,
+ * - a feathered thigh at the pivot itself, which is rotation-invariant: the
+ *   hip is plugged at every point of the stride, at any amplitude.
+ *
+ * The foot also comes in: shorter toes and a rear spur, so it stops reaching
+ * out past the body where it can be read on its own.
+ */
+const LEG = { hipY: 0.32, shank: 0.34, rTop: 0.062, rBot: 0.07 }
+
+/**
+ * The foot is centred on the ankle, not cantilevered forward off it.
+ *
+ * Every centimetre a toe reaches ahead of the pivot is a centimetre it drives
+ * INTO the road when the walk cycle swings the leg forward — the old 0.24 toes
+ * put the front foot 13 cm underground at mid-stride. Pulled back to a 0.165
+ * reach against the ankle's own 0.05 rise, the sole stays within a couple of
+ * centimetres of the grass through the whole cycle.
+ */
+function henFoot() {
+  const foot = at(new THREE.Group(), 0, -LEG.hipY, 0)
+  foot.add(at(box(0.13, 0.06, 0.13, P.beak), 0, 0.03, 0))
+  for (const a of [-0.52, 0, 0.52]) {
+    foot.add(at(rot(box(0.06, 0.052, 0.17, P.beak), 0, a, 0), Math.sin(a) * 0.058, 0.03, 0.08))
   }
-  leg.add(foot)
+  // Rear spur: three toes forward and nothing behind is a fork, not a foot.
+  foot.add(at(box(0.055, 0.05, 0.09, P.beak), 0, 0.03, -0.07))
+  return foot
+}
+
+function henLeg(side) {
+  const leg = at(new THREE.Group(), 0.11 * side, LEG.hipY, 0.02)
+  leg.add(scl(ball(0.098, P.hen, 12), 1, 0.92, 1))
+  leg.add(at(tube(LEG.rTop, LEG.rBot, LEG.shank, P.beak, 8), 0, 0.01 - LEG.shank / 2, 0))
+  leg.add(at(ball(0.054, P.beak, 10), 0, -0.165, 0))
+  leg.add(henFoot())
   return leg
+}
+
+/**
+ * Feathered thigh, parented to the BODY rather than to the leg.
+ *
+ * The animator bobs and squashes the body against legs that stay planted, so
+ * the socket is a moving target. Hanging the thigh off the body means the hip
+ * mass travels with every bob, squash and stretch, and it overlaps the shank
+ * top by more than the whole bob amplitude — there is no pose that opens a gap
+ * between torso and limb.
+ */
+function henThigh(side, bodyY) {
+  const thigh = scl(ball(0.135, P.hen, 12), 0.95, 1, 1.05)
+  return at(thigh, 0.11 * side, LEG.hipY - bodyY - 0.02, 0.02)
 }
 
 /** She is the subject of the game, so she is drawn at protagonist scale rather
  *  than at hen scale — the rig is built at natural proportion and blown up. */
 const HEN_SCALE = 1.8
 
+/** Body centre. Raised from 0.46 so the underside clears the hip: at 0.50 the
+ *  ellipsoid bottoms out at 0.234 and roughly three quarters of the shank is
+ *  outside the torso, which is what makes the leg a limb instead of a talon. */
+const HEN_BODY_Y = 0.5
+
 function buildChicken() {
   const g = new THREE.Group()
   const rig = scl(new THREE.Group(), HEN_SCALE)
-  const body = at(new THREE.Group(), 0, 0.46, 0)
+  const body = at(new THREE.Group(), 0, HEN_BODY_Y, 0)
   body.add(scl(ball(0.28, P.hen), 1.06, 0.95, 1.25))
   // Head rides high and forward so head-vs-body still reads as two shapes from
   // the steep tycoon camera.
@@ -248,10 +386,16 @@ function buildChicken() {
   const wingR = henWing(1)
   const tail = at(henTail(), 0, 0, -0.26)
   body.add(head, wingL, wingR, tail)
+  for (const s of [-1, 1]) body.add(henThigh(s, HEN_BODY_Y))
   const legL = henLeg(-1)
   const legR = henLeg(1)
   rig.add(body, legL, legR)
   g.add(rig)
+  // She is the subject standing on the road: without a hard note under her she
+  // hovers, exactly as the pig did.
+  // 0.05 clears the patch disc (RENDER_Y 0.03) and the road, and survives the
+  // ±0.06 body roll the walk cycle puts on the root without dipping underground.
+  g.add(at(contactShadow(0.46, 0.36, 0.42), 0, 0.05, 0.02))
   g.userData.parts = { body, head, comb: head.userData.comb, wingL, wingR, legL, legR, tail }
   // Heaviest line in the frame: the subject reads before the props do. She is
   // built from smooth blobs, so crease extraction finds almost nothing on her —
@@ -479,13 +623,26 @@ const GAMBREL = {
  *  the overhang swallows it and the barn goes back to being flush. */
 const EAVE_UNDER = GAMBREL.eaveY - GAMBREL.fascia
 
-function barnRoofShape() {
-  const { eaveX: ex, eaveY: ey, kneeX: kx, kneeY: ky, ridgeY } = GAMBREL
+/**
+ * The roof is TWO shapes, not one shape with a crease in it.
+ *
+ * A single extrusion in a single colour puts the entire gambrel on a hairline:
+ * the knuckle is drawn, but the planes either side of it are the same red, so
+ * the eye reads one mass and a scratch. Cut at the knee and painted a full
+ * value step apart, the break is carried by SHAPE — the steep lower band reads
+ * dark against the shallow upper cap, from any angle and at any distance,
+ * whether or not the ink line is resolvable.
+ *
+ * The two pieces share the horizontal plane at knee height, which is interior
+ * to the solid everywhere except the gable ends, where it becomes the drawn
+ * knee line — on BOTH ends, because an extrusion has two caps.
+ */
+function barnLowerRoofShape() {
+  const { eaveX: ex, eaveY: ey, kneeX: kx, kneeY: ky } = GAMBREL
   const s = new THREE.Shape()
   s.moveTo(-ex, EAVE_UNDER)
   s.lineTo(-ex, ey)
   s.lineTo(-kx, ky)
-  s.lineTo(0, ridgeY)
   s.lineTo(kx, ky)
   s.lineTo(ex, ey)
   s.lineTo(ex, EAVE_UNDER)
@@ -493,11 +650,54 @@ function barnRoofShape() {
   return s
 }
 
-/** Cream cap straddling the ridge. The two upper pitches only differ by 27 deg,
- *  which is under the crease threshold and correctly so — a real ridge is a
- *  capping board, not an angle, and the board's own box corners carry the line. */
+/** The ridge triangle: the shallow upper pitches, a full step lighter. */
+function barnUpperRoofShape() {
+  const { kneeX: kx, kneeY: ky, ridgeY } = GAMBREL
+  const s = new THREE.Shape()
+  s.moveTo(-kx, ky)
+  s.lineTo(0, ridgeY)
+  s.lineTo(kx, ky)
+  s.closePath()
+  return s
+}
+
+/** The four runs of the gambrel profile, as [x0, y0, x1, y1]. */
+const GABLE_RUNS = [
+  [-GAMBREL.eaveX, GAMBREL.eaveY, -GAMBREL.kneeX, GAMBREL.kneeY],
+  [-GAMBREL.kneeX, GAMBREL.kneeY, 0, GAMBREL.ridgeY],
+  [0, GAMBREL.ridgeY, GAMBREL.kneeX, GAMBREL.kneeY],
+  [GAMBREL.kneeX, GAMBREL.kneeY, GAMBREL.eaveX, GAMBREL.eaveY],
+]
+
+/**
+ * Cream rake boards down the gambrel, MIRRORED onto both gables.
+ *
+ * The break used to read on the near end only: the far gable was a bare red
+ * plane with the profile buried in its outline, so from three-quarter the barn
+ * looked like a gambrel in front and a shed behind. A rake board is what a real
+ * barn puts on that edge anyway, and running it on both ends states the
+ * silhouette twice — the second statement is what makes it read as the
+ * building's shape rather than as the near corner's accident.
+ */
+function barnRakes() {
+  const rakes = new THREE.Group()
+  const z = GAMBREL.depth / 2 + 0.09
+  for (const sz of [-1, 1]) {
+    for (const [x0, y0, x1, y1] of GABLE_RUNS) {
+      const [dx, dy] = [x1 - x0, y1 - y0]
+      const board = rot(box(Math.hypot(dx, dy) + 0.2, 0.26, 0.22, P.cream), 0, 0, Math.atan2(dy, dx))
+      rakes.add(at(board, (x0 + x1) / 2, (y0 + y1) / 2, z * sz))
+    }
+  }
+  return rakes
+}
+
+/** Cream cap straddling the ridge, run PAST both rake boards so it finishes the
+ *  ridge at each gable instead of stopping mid-run. The two upper pitches only
+ *  differ by 27 deg, under the crease threshold and correctly so — a real ridge
+ *  is a capping board, not an angle, and the board's own corners carry the line. */
 function barnRidge() {
-  return at(box(0.42, 0.26, GAMBREL.depth + 0.2, P.cream), 0, GAMBREL.ridgeY + 0.06, 0)
+  return at(box(0.42, 0.26, GAMBREL.depth + 0.6, P.cream), 0, GAMBREL.ridgeY + 0.06, 0)
 }
 
 /** Fascia boards down the two eaves: the drawn edge of the roof, and the thing
@@ -581,8 +781,9 @@ function barnLoft() {
 function buildBarn() {
   const g = new THREE.Group()
   g.add(extruded(barnWallShape(), 8, P.barnRed))
-  g.add(extruded(barnRoofShape(), GAMBREL.depth, P.barnRoof))
-  g.add(barnEaves(), barnRidge())
+  g.add(extruded(barnLowerRoofShape(), GAMBREL.depth, P.barnRoof))
+  g.add(extruded(barnUpperRoofShape(), GAMBREL.depth, P.barnRoofUp))
+  g.add(barnEaves(), barnRakes(), barnRidge())
   const postH = EAVE_UNDER - 0.02
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) g.add(at(box(0.32, postH, 0.32, P.cream), 5.04 * sx, postH / 2, 3.94 * sz))
@@ -831,8 +1032,11 @@ function pigHead() {
 
 function pigLeg(len) {
   const leg = new THREE.Group()
-  leg.add(at(rot(tube(0.11, 0.13, len, P.pig, 10), Math.PI / 2, 0, 0), 0, 0, len / 2))
-  leg.add(at(rot(tube(0.14, 0.12, 0.13, P.hoof, 8), Math.PI / 2, 0, 0), 0, 0, len + 0.06))
+  leg.add(at(rot(tube(0.12, 0.14, len, P.pig, 10), Math.PI / 2, 0, 0), 0, 0, len / 2))
+  // Trotter, not a boot: it used to be nearly as wide as the leg and darker
+  // than anything else on the animal, which is how four hooves under a pink
+  // balloon came to read as four clumps of mud parked beside it.
+  leg.add(at(rot(tube(0.13, 0.115, 0.1, P.hoof, 8), Math.PI / 2, 0, 0), 0, 0, len + 0.04))
   return leg
 }
 
@@ -846,8 +1050,14 @@ function pigLegs() {
   const legs = new THREE.Group()
   for (const x of [0.34, -0.32]) {
     const s = Math.sign(x)
-    legs.add(at(rot(pigLeg(0.3), 0.2, 0.18 * s, 0), x, 0.17, 0.28))
-    legs.add(at(rot(pigLeg(0.5), -0.6, -0.3 * s, 0), x * 0.74, 0.62, 0.26))
+    // Shoulder and haunch: a leg leaves the body from a MASS. Without one, the
+    // limbs start at the belly's silhouette edge and the eye has nothing to
+    // join them to — four stubs floating next to a pink balloon. The mass also
+    // pushes the leg roots inboard (z 0.28 → 0.16), so a real length of pink
+    // shank clears the belly before the trotter does.
+    legs.add(at(scl(ball(0.25, P.pig, 14), 0.86, 0.94, 1), x, 0.27, 0.2))
+    legs.add(at(rot(pigLeg(0.36), 0.2, 0.18 * s, 0), x, 0.19, 0.16))
+    legs.add(at(rot(pigLeg(0.52), -0.6, -0.3 * s, 0), x * 0.74, 0.6, 0.18))
   }
   return legs
 }
@@ -878,6 +1088,10 @@ function driveBreath(body, driver) {
 function buildPig() {
   const g = new THREE.Group()
   const body = pigBody()
+  // Hard contact patch first, under everything. A sleeping animal blocking the
+  // road is the frame's one physical-comedy beat, and it does not land while
+  // she hovers: the dark note under the belly is what puts her ON the dirt.
+  g.add(at(contactShadow(0.98, 0.6, 0.46), 0.1, 0.014, 0.06))
   g.add(pigContact(), body, pigHead(), pigLegs())
   const tail = meshOf(new THREE.TorusGeometry(0.11, 0.035, 6, 14), P.pigDark)
   g.add(at(rot(tail, 0, 0.5, 0), -0.62, 0.33, -0.04))
@@ -911,10 +1125,34 @@ function leafPair(rnd) {
   ]
 }
 
-function treeTrunk(rnd, h) {
+/**
+ * How far the trunk runs UP INTO the canopy that sits on it.
+ *
+ * A trunk that stops where the canopy's ANCHOR is is not a trunk inside a
+ * crown — the lobes are scattered on a ring and scaled about that anchor, so
+ * the top of the stick can finish in open air with the leaves floating a third
+ * of a metre above it. From the far side of the field, with fog washing the
+ * green out, what is left is a bare tapered slab standing in the grass: the
+ * "rendering error" read. The trunk now runs past the anchor and deep into the
+ * mass, so trunk and crown are one welded silhouette at every distance and
+ * every lean.
+ */
+const CANOPY_GRIP = { blob: 0.9, conifer: 0.3, shrub: 1.05 }
+
+/** Root flare. A tree does not meet the ground as a cylinder pushed into a
+ *  plane; it widens into it. Cheap, and it is half of what tells a viewer that
+ *  the thing is planted rather than placed. */
+function treeRoots(r) {
+  return at(tube(r * 1.05, r * 2.15, r * 1.3, P.trunk, 10), 0, r * 0.64, 0)
+}
+
+/** @param grip extra length drawn ABOVE `h`, buried inside the canopy. */
+function treeTrunk(rnd, h, grip) {
   const trunk = new THREE.Group()
   const r = 0.2 + rnd() * 0.12
-  trunk.add(at(rot(tube(r, r * 1.75, h, P.trunk, 10), 0, 0, 0.04), 0, h / 2, 0))
+  const drawn = h + grip
+  trunk.add(at(rot(tube(r * 0.9, r * 1.75, drawn, P.trunk, 10), 0, 0, 0.04), 0, drawn / 2, 0))
+  trunk.add(treeRoots(r))
   if (rnd() > 0.45) {
     const branch = rot(tube(0.12, 0.16, 0.85, P.trunk, 8), 0, rnd() * Math.PI * 2, 0.85)
     trunk.add(at(branch, -0.38, h * 0.92, 0.1))
@@ -968,6 +1206,11 @@ function coniferCanopy(rnd, [leaf]) {
 /** Low wide shrub mass: squats under the blobs and breaks up the skyline. */
 function shrubCanopy(rnd, [leaf, light]) {
   const canopy = new THREE.Group()
+  // Core lobe ON the trunk axis. The scattered ring alone is a wreath: on a few
+  // seeds every lobe cleared the middle and the stick came out of the top of
+  // the shrub into open air. Deliberately takes no rnd() draw, so adding it
+  // leaves every seeded shrub otherwise identical to the one before it.
+  canopy.add(at(scl(ball(0.95, light, 16), 1, 0.8, 1), 0, -0.1, 0))
   const count = 5 + Math.floor(rnd() * 4)
   for (let i = 0; i < count; i++) {
     const a = (i / count) * Math.PI * 2 + rnd() * 0.7
@@ -988,6 +1231,19 @@ function treeCanopy(kind, rnd, tones, trunkH) {
 
 const TRUNK_H = { blob: [1.7, 0.7], conifer: [1.15, 0.5], shrub: [0.85, 0.3] }
 
+/** Insurance, not decoration: a tree with an empty canopy group must never
+ *  leave this function, whatever a kind's scatter happens to roll. */
+function ensureCanopy(canopy, tones) {
+  if (canopy.children.length) return canopy
+  canopy.add(ball(1.15, tones[1], 16))
+  return canopy
+}
+
+/** Pool of shade under the crown. Tagged so world.js can fade or drop it on
+ *  the far treeline, where a hard dark note would break atmospheric depth. */
+const treeShadow = (kind) =>
+  kind === 'conifer' ? contactShadow(0.85, 0.66, 0.32) : contactShadow(1.25, 0.9, 0.34)
+
 function buildTree(seed) {
   const rnd = seeded(seed)
   const g = new THREE.Group()
@@ -1000,8 +1256,18 @@ function buildTree(seed) {
   const kind = TREE_KINDS[Math.floor(rnd() * TREE_KINDS.length)]
   const [base, span] = TRUNK_H[kind]
   const trunkH = base + rnd() * span
-  lean.add(treeTrunk(rnd, trunkH), treeCanopy(kind, rnd, leafPair(rnd), trunkH))
-  g.add(lean)
+  // Trunk and canopy are built as ONE unit under one lean node and published
+  // as one pair on userData, so any distance cull or LOD swap that hides a
+  // tree takes the crown and the stick together — there is no seam in this
+  // model that a traversal can remove half of.
+  const trunk = treeTrunk(rnd, trunkH, CANOPY_GRIP[kind])
+  const tones = leafPair(rnd)
+  const canopy = ensureCanopy(treeCanopy(kind, rnd, tones, trunkH), tones)
+  lean.add(trunk, canopy)
+  lean.name = 'tree-unit'
+  g.add(lean, treeShadow(kind))
+  g.userData.kind = kind
+  g.userData.parts = { trunk, canopy }
   // Trees are scenery, not subject: a thin line lets the treeline sit behind
   // the buildings. world.js should thin it further toward 0 with distance via
   // toon.js `setInkWeight` once each tree is placed.
@@ -1111,6 +1377,10 @@ function contactShadow(rx, rz = rx, opacity = 0.4) {
   )
   m.scale.set(rx, rz, 1)
   m.receiveShadow = false
+  // Tagged so placement code can find them: a hard contact note belongs under
+  // anything in the near and middle field, but on the far treeline it fights
+  // atmospheric perspective and world.js may want to fade or drop it.
+  m.userData.isContactShadow = true
   return at(rot(detail(m), -Math.PI / 2, 0, 0), 0, 0.012, 0)
 }
 
@@ -1133,17 +1403,38 @@ function groundDecal(shape, color, y = 0.02) {
  * radius: 0.15 is a sparrow on a fencepost, 0.19 the crow that has taken the
  * scarecrow's hat and is not remotely frightened of it.
  */
+/**
+ * Beak and eye colours for the small birds only — NOT the hen's.
+ *
+ * On a yellow bird the hen's own orange beak sits a hair off the plumage in
+ * both hue and value, and an ink pupil 3 cm across on a saturated body is a
+ * speck: the fence-post bird arrived as an undifferentiated yellow blob that
+ * read as a lollipop. The beak goes darker and half again as long, and the eye
+ * gets a cream backing disc under the pupil so it survives at prop scale. At
+ * this size the silhouette has to say BIRD with three marks; these are them.
+ */
+const BIRD_BEAK = 0xd9791a
+
+function birdFace(b, r) {
+  b.add(at(rot(spike(r * 0.4, r * 1.05, BIRD_BEAK, 8), Math.PI / 2), 0, r * 1.72, r * 1.2))
+  for (const s of [-1, 1]) {
+    b.add(detail(at(ball(r * 0.3, P.shell, 10), r * 0.34 * s, r * 2.0, r * 0.82)))
+    b.add(detail(at(ball(r * 0.19, INK, 8), r * 0.36 * s, r * 2.02, r * 0.94)))
+  }
+}
+
 function songbird(color, r = 0.15, accent = color) {
   const b = new THREE.Group()
   b.add(at(scl(ball(r, color, 14), 1, 0.94, 1.18), 0, r * 1.0, 0))
   b.add(at(ball(r * 0.72, color, 12), 0, r * 1.82, r * 0.46))
-  b.add(at(rot(spike(r * 0.3, r * 0.72, P.beak, 8), Math.PI / 2), 0, r * 1.74, r * 1.05))
+  birdFace(b, r)
   for (const s of [-1, 1]) {
-    b.add(detail(at(ball(r * 0.17, INK, 8), r * 0.33 * s, r * 2.02, r * 0.86)))
     b.add(at(scl(ball(r * 0.62, accent, 10), 0.3, 0.86, 1.12), r * 0.84 * s, r * 1.02, -r * 0.06))
-    b.add(detail(at(tube(r * 0.11, r * 0.11, r * 0.5, P.beak, 6), r * 0.3 * s, r * 0.26, r * 0.12)))
+    b.add(detail(at(tube(r * 0.11, r * 0.11, r * 0.5, BIRD_BEAK, 6), r * 0.3 * s, r * 0.26, r * 0.12)))
   }
-  b.add(at(rot(scl(spike(r * 0.52, r * 1.5, accent, 8), 1, 1, 0.32), -1.95, 0, 0), 0, r * 1.12, -r * 1.2))
+  // Tail nub, cocked up: the third mark. A round body with a head and no tail
+  // is a mushroom from behind.
+  b.add(at(rot(scl(spike(r * 0.56, r * 1.7, accent, 8), 1, 1, 0.32), -1.85, 0, 0), 0, r * 1.16, -r * 1.24))
   return b
 }
 
@@ -1162,7 +1453,7 @@ function buildBirdOnPost(seed) {
   g.add(at(rot(box(0.16, h, 0.16, P.cream), (rnd() - 0.5) * 0.14, rnd(), (rnd() - 0.5) * 0.16), 0, h / 2 - 0.04, 0))
   g.add(at(box(0.28, 0.07, 0.28, P.woodDark), 0, h - 0.01, 0))
   const [body, accent] = BIRD_PLUMAGE[Math.floor(rnd() * BIRD_PLUMAGE.length)]
-  const bird = withSteps(STEPS.CHARACTER, () => songbird(body, 0.15, accent))
+  const bird = withSteps(STEPS.CHARACTER, () => songbird(body, 0.17, accent))
   g.add(at(rot(bird, 0, rnd() * Math.PI * 2, 0), 0, h + 0.02, 0))
   return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
 }
@@ -1522,6 +1813,9 @@ function troughRim() {
   for (const s of [-1, 1]) {
     rim.add(at(box(len + 0.2, 0.1, 0.24, P.woodDark), 0, rimY + 0.05, (depth / 2 - 0.08) * s))
     rim.add(at(box(0.24, 0.1, depth + 0.2, P.woodDark), (len / 2 - 0.02) * s, rimY + 0.05, 0))
+    // Lit strip along the top of the lip. The rim is the edge that separates
+    // the water from the world, so it is the one edge that gets a highlight.
+    rim.add(detail(at(box(len + 0.16, 0.03, 0.13, P.wood), 0, rimY + 0.105, (depth / 2 - 0.11) * s)))
   }
   for (const s of [-1, 1]) {
     rim.add(at(box(0.09, rimY - TROUGH.floorY + 0.1, depth + 0.04, P.metalDark), 0.68 * s, 0.49, 0))
@@ -1529,16 +1823,24 @@ function troughRim() {
   return rim
 }
 
-/** Water surface, sunk 0.12 under the rim, with one drawn glare streak and a
- *  short second one. Flat unlit slabs — a highlight is paint, not shading. */
+/**
+ * Water surface, sunk under the rim, in three tones and a streak.
+ *
+ * One flat plate is a coloured lid. A cel paints held water as a dark band
+ * where the wall shadows it, a lighter plate inboard of that, and a hard glare
+ * streak on top — three flat notes with drawn edges between them, which is
+ * what says "liquid in a container" rather than "cyan surface".
+ */
 function troughWater() {
   const { len, depth, wall } = TROUGH
   const water = new THREE.Group()
   const top = 0.62
-  water.add(at(box(len - wall * 2, 0.4, depth - wall * 2, P.water), 0, top - 0.2, 0))
+  const [w, d] = [len - wall * 2, depth - wall * 2]
+  water.add(at(box(w, 0.4, d, P.waterDeep), 0, top - 0.2, 0))
+  water.add(detail(at(box(w - 0.14, 0.03, d - 0.12, P.water), 0, top + 0.005, 0)))
   const streaks = [[0.86, 0.07, -0.24, -0.08], [0.4, 0.055, 0.5, 0.13]]
-  for (const [w, d, x, z] of streaks) {
-    water.add(detail(at(rot(box(w, 0.02, d, P.waterLight), 0, 0.09, 0), x, top + 0.012, z)))
+  for (const [sw, sd, x, z] of streaks) {
+    water.add(detail(at(rot(box(sw, 0.02, sd, P.waterLight), 0, 0.09, 0), x, top + 0.03, z)))
   }
   return water
 }
@@ -1700,6 +2002,10 @@ function buildPeckingHen(seed) {
   const [legL, legR] = [henLeg(-1), henLeg(1)]
   legL.position.z += 0.08
   legR.position.z -= 0.05
+  // Thighs live on the rig rather than on the body here: the pecker's torso is
+  // pitched 0.5 rad, and a hip mass that took that pitch would swing clear of
+  // the socket it exists to fill.
+  for (const s of [-1, 1]) rig.add(henThigh(s, 0))
   rig.add(peckerBody(), legL, legR)
   g.add(rot(rig, 0, (rnd() - 0.5) * 0.45, 0))
   g.add(at(contactShadow(0.34, 0.26, 0.34), 0, 0.012, 0.06))
