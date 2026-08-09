@@ -18,14 +18,14 @@ renderer.toneMapping = THREE.NoToneMapping // ink shader outputs raw color; keep
 app.appendChild(renderer.domElement)
 
 const scene = new THREE.Scene()
-const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.5, 600)
-camera.position.set(6, 8, 20)
+const camera = new THREE.PerspectiveCamera(34, innerWidth / innerHeight, 0.5, 600)
+camera.position.set(2, 14, 34)
 
 const controls = new OrbitControls(camera, renderer.domElement)
-controls.target.set(0, 1.2, -2)
+controls.target.set(2, 2.5, -14)
 controls.enableDamping = true
 controls.maxPolarAngle = Math.PI * 0.46
-controls.minPolarAngle = Math.PI * 0.30
+controls.minPolarAngle = Math.PI * 0.34
 controls.minDistance = 10
 controls.maxDistance = 90
 controls.mouseButtons.LEFT = null // left click is for the game; pan/rotate on right/middle

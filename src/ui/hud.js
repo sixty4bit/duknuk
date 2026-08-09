@@ -37,10 +37,14 @@ const STYLE_CSS = `
   font-family: inherit;
 }
 .duk-money {
-  position: fixed; top: 16px; left: 16px;
+  /* top-right, opposite the hint balloon's bottom-left corner — the two
+     panels sit on a diagonal so the UI doesn't pile all its weight on the
+     same side as the balloon while the barn/paddock mass sits on the right. */
+  position: fixed; top: 16px; right: 16px;
   display: flex; align-items: center; gap: 10px;
-  padding: 8px 18px 8px 8px;
-  transform: rotate(-1deg);
+  padding: 8px 8px 8px 18px;
+  flex-direction: row-reverse;
+  transform: rotate(1deg);
   animation: duk-squash-in 0.4s ease-out;
 }
 .duk-coin {
@@ -60,9 +64,9 @@ const STYLE_CSS = `
 }
 .duk-money-amount.duk-bounce { animation: duk-text-bounce 0.35s ease-out; }
 .duk-hint {
-  /* bottom-left, tucked into the same left-edge column as the money chip
-     above it — off the focal composition (fence line / patch) that
-     bottom-center used to sit on top of. */
+  /* bottom-left; the money chip has moved to top-right so the two panels
+     balance the composition on a diagonal instead of both hugging the left
+     edge against the barn/paddock mass on the right. */
   position: fixed; bottom: 20px; left: 16px;
   transform: rotate(-0.8deg);
   padding: 10px 26px 10px 34px; font-size: 15px; text-align: left;
@@ -70,24 +74,24 @@ const STYLE_CSS = `
   animation: duk-squash-in 0.4s ease-out;
 }
 .duk-hint::before {
-  /* speech-bubble tail, ink outline — points right, toward the scene */
+  /* speech-bubble tail, ink outline — points left-down at the chicken
+     avatar badge pinned to the panel's top-left corner, so the line reads
+     as spoken by the chicken instead of by empty grass off to the right */
   content: '';
-  position: absolute; top: 50%; right: -15px;
-  transform: translateY(-50%);
+  position: absolute; top: 4px; left: -17px;
   width: 0; height: 0;
-  border-top: 10px solid transparent;
-  border-bottom: 5px solid transparent;
-  border-left: 17px solid var(--duk-ink);
+  border-top: 4px solid transparent;
+  border-bottom: 11px solid transparent;
+  border-right: 17px solid var(--duk-ink);
 }
 .duk-hint::after {
   /* tail cream fill, inset over the ink triangle */
   content: '';
-  position: absolute; top: 50%; right: -10px;
-  transform: translateY(-50%);
+  position: absolute; top: 6px; left: -12px;
   width: 0; height: 0;
-  border-top: 7px solid transparent;
-  border-bottom: 3px solid transparent;
-  border-left: 12px solid var(--duk-cream);
+  border-top: 3px solid transparent;
+  border-bottom: 8px solid transparent;
+  border-right: 12px solid var(--duk-cream);
 }
 .duk-hint-portrait {
   /* hangs outside the panel like a badge pinned to the corner, so it never

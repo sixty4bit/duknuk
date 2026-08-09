@@ -28,15 +28,16 @@ const RING_WALL_HEIGHT = 0.35
 // is enough resolution for this to actually hide the per-cell grid.
 const FEATHER_PX = 3.5
 
-// Lush must be the frame's richest note — well away from field/ground green
-// in both hue and value, not a few-percent variant of it — so grazed-vs-fresh
-// reads unmistakably. Deep saturated emerald with a blue lean, darker and
-// more saturated than anything else on the ground, down to dry umber. Tuned
-// against the *decoded* (sRGB colorSpace) texture output, not raw canvas hex —
-// see the colorSpace assignment in _buildVisuals.
-const LUSH = new THREE.Color('#1f7a3c')
-const THIN = new THREE.Color('#d8b23a')
-const BARE = new THREE.Color('#8a5a2b')
+// Lush must be the frame's brightest, most saturated note — a monotone
+// descending value ramp from lush to bare — so depletion reads from value
+// alone at a glance. Fresh grass in a cartoon is bright yellow-green, not a
+// dark tone that risks reading as a hole or shadow against the field.
+// Grazed-out fades through dusty gold to dark umber. Tuned against the
+// *decoded* (sRGB colorSpace) texture output, not raw canvas hex — see the
+// colorSpace assignment in _buildVisuals.
+const LUSH = new THREE.Color('#8fdc45')
+const THIN = new THREE.Color('#d4ae38')
+const BARE = new THREE.Color('#96652f')
 
 function foodColor(t, target = new THREE.Color()) {
   if (t >= 0.5) return target.copy(THIN).lerp(LUSH, (t - 0.5) * 2)
@@ -65,9 +66,14 @@ function buildWobbledOutline(radius, segments = 72) {
 function buildDiscGeometry(radius, centers) {
   const positions = [0, 0, 0]
   const uvs = [0.5, 0.5]
+  // Normalized against a diameter padded past the wobble's outward peak
+  // (1 + 0.05 + 0.025 = 1.075x radius) so outward-wobble arcs never push uv
+  // to/past 1.0 and clamp — that clamp was stretching the edge texel
+  // radially outward, smearing fill past the boundary on those arcs.
+  const uvDiameter = radius * 2 * 1.08
   for (const [cx, cz] of centers) {
     positions.push(cx, 0, cz)
-    uvs.push(cx / (radius * 2) + 0.5, cz / (radius * 2) + 0.5)
+    uvs.push(cx / uvDiameter + 0.5, cz / uvDiameter + 0.5)
   }
   const segments = centers.length - 1
   const index = []
@@ -209,6 +215,12 @@ export class Patch {
       if (!o.userData.isOutline) return
       o.material.depthTest = false
       o.material.depthWrite = false
+      // The rim wall is an open tube (no top/bottom caps): on a closed hull
+      // BackSide alone would work, but here the near half's quads face the
+      // camera and get culled outright, leaving only the far arc inked. This
+      // is a UI-grade decal, not a lit 3D edge, so draw both winding
+      // directions instead of relying on hull closure.
+      o.material.side = THREE.DoubleSide
       o.renderOrder = 10
     })
   }
@@ -307,6 +319,14 @@ export class Patch {
     ctx.save()
     ctx.filter = `blur(${FEATHER_PX}px)`
     ctx.drawImage(this._rawCanvas, 0, 0)
+    ctx.restore()
+    // The blur above bleeds ~FEATHER_PX past the raw fill's clip on every
+    // arc. Re-clip to the same wobbled boundary the ink ring is built from
+    // so the feather stays strictly inside the line instead of smearing past
+    // it.
+    ctx.save()
+    ctx.globalCompositeOperation = 'destination-in'
+    ctx.fill(this._outlineClipPath())
     ctx.restore()
   }
 

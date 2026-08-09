@@ -41,15 +41,16 @@ function gaussianRandom(stdDev) {
 
 // ---------------------------------------------------------------- ground
 
-/** Painter's-eye grass texture: a handful of large soft-edged value masses
- * laid first (the broad shapes a background painter blocks in), then a
- * sparse pass of hand-drawn clump marks on top for readable detail — not
- * stipple. Tiled large via repeat so tiles read as painted shapes, not noise. */
+/** Painter's-eye grass texture: dense small hand-drawn grass-clump strokes at
+ * grass scale (~6 world units/tile). The broad value masses are owned
+ * entirely by the vertex-color field bands (applyBroadFieldShading) now — this
+ * texture only supplies the fine brushy detail on top, not competing blobs. */
 function buildGroundTexture() {
-  // 1024px at repeat(4,4) — was 256px at repeat(14,14), which put the same
+  // 1024px at repeat(20,20) — was 256px at repeat(14,14), which put the same
   // handful of strokes in lockstep across 5-8 visible tiles and read as a
-  // checkerboard. A bigger canvas at a low repeat plus far more strokes means
-  // no single mark is identifiable as a repeating motif.
+  // checkerboard. A bigger canvas at a tight repeat plus far more, far
+  // smaller strokes means no single mark is identifiable as a repeating
+  // motif or sized like foliage instead of grass.
   const px = 1024
   const scale = px / 256
   const canvas = document.createElement('canvas')
@@ -58,30 +59,25 @@ function buildGroundTexture() {
   ctx.fillStyle = '#7ec852'
   ctx.fillRect(0, 0, px, px)
   const rnd = seededRand(4242)
-  const massColors = ['rgba(150,205,84,0.55)', 'rgba(88,150,88,0.5)']
-  const massCount = 24 + Math.floor(rnd() * 16) // scaled up for the larger canvas
-  for (let i = 0; i < massCount; i++) {
-    const x = rnd() * px
-    const y = rnd() * px
-    const r = (40 + rnd() * 70) * scale
-    const grad = ctx.createRadialGradient(x, y, 0, x, y, r)
-    grad.addColorStop(0, massColors[i % massColors.length])
-    grad.addColorStop(1, 'rgba(0,0,0,0)')
-    ctx.fillStyle = grad
-    ctx.beginPath()
-    ctx.arc(x, y, r, 0, Math.PI * 2)
-    ctx.fill()
-  }
+  // The radial masses previously drawn here (24-40 soft blobs, r up to 26
+  // world units) fought the vertex-color field bands, which now own the
+  // broad-mass job at a correct 12-18u frequency (see applyBroadFieldShading)
+  // — deleted rather than shrunk, since two systems drawing the same masses
+  // at different scales is the redundancy the critic flagged.
   const tones = ['#6cb544', '#8fd867', '#5a9e3a']
   ctx.lineCap = 'round'
-  const strokeCount = 90 // was 20 — dense enough at repeat(4,4) to stay illegible as a motif
+  // Strokes shrunk from len (18+22)*scale / width (6+6)*scale — 4.7u long by
+  // 1.4u wide, prop-sized (as wide as the chicken, 3x longer) — to grass-mark
+  // scale (~0.35u long, 0.09u wide), with count raised to stay dense enough
+  // not to read as sparse dots at the new tighter repeat.
+  const strokeCount = 400
   for (let i = 0; i < strokeCount; i++) {
     const x = rnd() * px
     const y = rnd() * px
     const a = rnd() * Math.PI
-    const len = (18 + rnd() * 22) * scale
+    const len = (6 + rnd() * 7) * scale
     ctx.strokeStyle = tones[i % tones.length]
-    ctx.lineWidth = (6 + rnd() * 6) * scale
+    ctx.lineWidth = (1.6 + rnd() * 1.4) * scale
     ctx.beginPath()
     ctx.moveTo(x, y)
     ctx.quadraticCurveTo(x + Math.cos(a) * len * 0.5, y + Math.sin(a) * len * 0.5 - 6 * scale, x + Math.cos(a) * len, y + Math.sin(a) * len)
@@ -90,9 +86,9 @@ function buildGroundTexture() {
   const tex = new THREE.CanvasTexture(canvas)
   if ('colorSpace' in tex) tex.colorSpace = THREE.SRGBColorSpace
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-  // 120-unit plane, repeat 4x so each tile spans 30 world units of painted
-  // texture — large legible shapes, not a lattice.
-  tex.repeat.set(4, 4)
+  // 120-unit plane, repeat 20x so each tile spans 6 world units of painted
+  // texture — grass scale, not foliage scale (was repeat(4,4) = 30u/tile).
+  tex.repeat.set(20, 20)
   // NearestFilter at ~8.5 units/tile was aliasing, not stylization.
   tex.magFilter = THREE.LinearFilter
   tex.minFilter = THREE.LinearMipmapLinearFilter
@@ -104,25 +100,28 @@ function buildGroundTexture() {
   return tex
 }
 
-// Posterized field bands — each its own hue AND value, low/cool to high/warm.
-// Hard boundaries between bands (no lerp) is the point: a background painter
-// blocks in masses, a smooth gaussian gradient is the strongest 3D-engine tell.
+// Posterized field bands — narrowed to one hue family (green) and a tight
+// value window. Was 4 bands spanning cool blue-teal (0.72) to chartreuse
+// (1.12), a ~3:1 value ratio and ~45deg hue swing across a hard edge — that
+// read as camouflage, not grass. Grass varies by a few percent of value; the
+// picture's dark should come from drawn cast shadows, never the field tint.
 const FIELD_BANDS = [
-  { color: new THREE.Color(0x4f8f76), value: 0.72 }, // cool low passages
-  { color: new THREE.Color(0x7fae5c), value: 0.85 },
-  { color: new THREE.Color(0xa8c95a), value: 1.0 },
-  { color: new THREE.Color(0xc9dd5a), value: 1.12 }, // warm lit passages
+  { color: new THREE.Color(0x86c057), value: 0.94 },
+  { color: new THREE.Color(0x9ccb5e), value: 1.0 },
+  { color: new THREE.Color(0xb2d668), value: 1.06 },
 ]
 
-/** Low-frequency field variation baked as vertex colors, quantized into 4
- * discrete painted bands instead of a continuous cool-to-warm airbrush. */
+/** Low-frequency field variation baked as vertex colors, quantized into
+ * discrete painted bands instead of a continuous cool-to-warm airbrush.
+ * Frequency raised (was 0.05/0.045, a 125-140 unit wavelength producing
+ * 30-60u splotches 20-40x the size of a chicken) so features are 12-18u. */
 function applyBroadFieldShading(geo) {
   const pos = geo.attributes.position
   const colors = new Float32Array(pos.count * 3)
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i)
     const z = pos.getZ(i)
-    const n = Math.sin(x * 0.05 + 1.7) * Math.cos(z * 0.045 - 0.6) * 0.6 + Math.sin(x * 0.017 - z * 0.021) * 0.4
+    const n = Math.sin(x * 0.16 + 1.7) * Math.cos(z * 0.14 - 0.6) * 0.6 + Math.sin(x * 0.017 - z * 0.021) * 0.4
     const t = THREE.MathUtils.clamp(0.5 + n * 0.5, 0, 1)
     const band = FIELD_BANDS[Math.min(FIELD_BANDS.length - 1, Math.floor(t * FIELD_BANDS.length))]
     colors[i * 3] = band.color.r * band.value
@@ -132,21 +131,41 @@ function applyBroadFieldShading(geo) {
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
 }
 
-/** Flat desaturated backdrop disc under the 120-unit playfield so the field
- * never terminates on a hard edge. Radius cut to just past the treeline ring
- * (HALF+6) so its rim sits among the tree trunks instead of exposed as a bare
- * ring in the two deliberate treeline gaps — was size*1.9 (228u), fully
- * fog-saturated under the old near fog, so pushing fog back would have
- * revealed a hard-edged ring circumscribing the field. Cool desaturated tone
- * (was warm 0x8fae86) matching the field's cool end; fog (near 85/far 200)
- * plus the sky dome's painted horizon carry everything past this rim. */
-function buildFarBackdropGround(size) {
-  const radius = size / 2 + 10
-  const geo = new THREE.CircleGeometry(radius, 48)
+/** Perturbs a CircleGeometry's rim (all vertices but the center) with a
+ * low-frequency angular wobble so the disc's silhouette isn't a perfect
+ * circle — used to keep the backdrop disc's rim from ever coinciding with
+ * the ground plane's own dead-straight edge. Geometry is still flat/planar
+ * (XY, pre-rotateX) so it's cheap and normals stay simple. */
+function buildWobbledDiscGeometry(radius, segments, amp) {
+  const geo = new THREE.CircleGeometry(radius, segments)
+  const pos = geo.attributes.position
+  for (let i = 1; i < pos.count; i++) {
+    const x = pos.getX(i)
+    const y = pos.getY(i)
+    const angle = Math.atan2(y, x)
+    const wobble = 1 + (Math.sin(angle * 7) * 0.6 + Math.sin(angle * 3 + 1.3) * 0.4) * amp
+    pos.setX(i, x * wobble)
+    pos.setY(i, y * wobble)
+  }
+  pos.needsUpdate = true
+  return geo
+}
+
+/** Flat desaturated backdrop disc past the played field so it never
+ * terminates on a hard edge. Pushed to radius 170 (was HALF+10 = 70, which
+ * sat only ~0.8deg / 17px from the ground plane's own z=-60 edge and fused
+ * into one dead-straight horizon line) and dropped/tilted so its rim never
+ * runs parallel to the ground plane's edge. Rim is wobbled, not a clean
+ * circle, for the same reason. Recolored to a light cool green-grey near
+ * FOG_COLOR (was flat teal 0x7d9e9a, a hue jump against the field greens). */
+function buildFarBackdropGround() {
+  const radius = 170
+  const geo = buildWobbledDiscGeometry(radius, 64, 0.03)
   geo.rotateX(-Math.PI / 2)
-  const mat = toonMaterial(0x7d9e9a, { steps: 2 })
+  const mat = toonMaterial(0xaec2ba, { steps: 2 })
   const disc = new THREE.Mesh(geo, mat)
-  disc.position.y = -0.04
+  disc.position.y = -1.2
+  disc.rotation.x = THREE.MathUtils.degToRad(0.5)
   disc.receiveShadow = true
   return disc
 }
@@ -188,13 +207,17 @@ function drawCloudShape(ctx, cx, cy, s) {
 }
 
 /** Painted-flat clouds baked straight into the backdrop so they are visible
- * from frame one regardless of where the camera is orbited to. */
+ * from frame one regardless of where the camera is orbited to. cy/scale are
+ * pinned to the dome's actually-visible band (elevation = 90 - 180*(y/h); the
+ * default camera only ever sees roughly -6.5..+4.4deg, i.e. y = h*0.475..0.537)
+ * — anything drawn outside that lands off the top of the frame and is never
+ * seen. */
 function drawPaintedClouds(ctx, w, h) {
   const rnd = seededRand(99)
   for (let i = 0; i < 9; i++) {
     const cx = rnd() * w
-    const cy = h * (0.1 + rnd() * 0.26)
-    const scale = 40 + rnd() * 70
+    const cy = h * (0.478 + rnd() * 0.02)
+    const scale = 30 + rnd() * 25
     drawCloudShape(ctx, cx, cy, scale)
     if (cx < scale * 1.5) drawCloudShape(ctx, cx + w, cy, scale)
     if (cx > w - scale * 1.5) drawCloudShape(ctx, cx - w, cy, scale)
@@ -226,12 +249,14 @@ function buildSkyTexture() {
     ctx.fillStyle = `rgb(${(c.r * 255) | 0},${(c.g * 255) | 0},${(c.b * 255) | 0})`
     ctx.fillRect(0, y, w, 1)
   }
-  // Was h*0.5 — from the default camera (y=11.5) the geometric horizon
-  // (backdrop disc + fog) sat above these painted bands and occluded both, so
-  // the ridge and treeline never appeared on screen. Raised so they clear it.
-  const horizonY = h * 0.44
-  drawSilhouetteBand(ctx, w, horizonY - h * 0.035, horizonY - h * 0.008, '#9fb4c4', 5, h * 0.01)
-  drawSilhouetteBand(ctx, w, horizonY - h * 0.016, horizonY + h * 0.004, '#1f2e1a', 11, h * 0.016)
+  // Was h*0.44, computed against the wrong occluder. The real constraint is
+  // the dome's own elevation mapping: elevation = 90 - 180*(y/h), and the
+  // default camera's visible band is only ~-6.5..+4.4deg — i.e. y =
+  // h*0.475..0.537. h*0.44 (elevation +10.8deg) was off the top of the frame
+  // entirely, which is why the ridge/treeline never rendered on screen.
+  const horizonY = h * 0.505
+  drawSilhouetteBand(ctx, w, horizonY - h * 0.018, horizonY - h * 0.004, '#9fb4c4', 5, h * 0.006)
+  drawSilhouetteBand(ctx, w, h * 0.515 - h * 0.012, h * 0.515 + h * 0.003, '#1f2e1a', 11, h * 0.008)
   drawPaintedClouds(ctx, w, h)
   const tex = new THREE.CanvasTexture(canvas)
   if ('colorSpace' in tex) tex.colorSpace = THREE.SRGBColorSpace
@@ -326,20 +351,26 @@ function buildContactShadow(radius) {
 
 let cloudShadowTex = null
 
-/** Soft dark-green radial falloff, no hard edge — a cloud-shadow mass, not a
- * contact shadow. Shared/cached like the contact-shadow texture above. */
+/** Lobed cloud-shape silhouette (same five-puff massing as drawCloudShape),
+ * filled flat and softened with a small blur — a cloud shadow is a drawn
+ * lobed shape with a soft-but-readable edge, not a bell-curve airbrush. Was a
+ * pure radial gaussian, which is what made the dark areas read as "stains"
+ * rather than shadows. Shared/cached like the contact-shadow texture above. */
 function cloudShadowTexture() {
   if (cloudShadowTex) return cloudShadowTex
   const px = 256
   const canvas = document.createElement('canvas')
   canvas.width = canvas.height = px
   const ctx = canvas.getContext('2d')
-  const g = ctx.createRadialGradient(px / 2, px / 2, 0, px / 2, px / 2, px / 2)
-  g.addColorStop(0, 'rgba(18,42,24,0.4)')
-  g.addColorStop(0.55, 'rgba(18,42,24,0.32)')
-  g.addColorStop(1, 'rgba(18,42,24,0)')
-  ctx.fillStyle = g
-  ctx.fillRect(0, 0, px, px)
+  ctx.filter = 'blur(6px)'
+  ctx.fillStyle = 'rgba(24,52,32,0.24)'
+  const s = px * 0.34
+  const puffs = [[0, 0, 1], [0.7, 0.15, 0.65], [-0.7, 0.12, 0.68], [0.25, -0.35, 0.55], [-0.3, -0.3, 0.5]]
+  for (const [dx, dy, r] of puffs) {
+    ctx.beginPath()
+    ctx.ellipse(px / 2 + dx * s, px / 2 + dy * s * 0.6, r * s * 0.75, r * s * 0.42, 0, 0, Math.PI * 2)
+    ctx.fill()
+  }
   cloudShadowTex = new THREE.CanvasTexture(canvas)
   return cloudShadowTex
 }
@@ -515,22 +546,71 @@ function buildWindmill() {
   return addOutline(g, { thickness: 0.035 })
 }
 
+/** Was three values of one brown with no cross-bracing, no hoop bands, no
+ * ladder, no finial — at horizon distance it resolved to a flat untextured
+ * box next to the silo, which reads instantly at the same distance purely
+ * because its red cap is a hue/value break. Cream tank body separates it from
+ * its own brown legs; hoop bands separate the tank from the cream itself;
+ * cross-bracing, ladder and finial are the small silhouette breaks that read
+ * as "built structure" rather than placeholder geometry. Scaled 1.35x as a
+ * horizon landmark that needs to out-read the silo, not undersell it. */
 function buildWaterTower() {
   const g = new THREE.Group()
   const legMat = toonMaterial(0x6a4a2c, { steps: 3 })
-  for (const [sx, sz] of [[-0.9, -0.9], [0.9, -0.9], [-0.9, 0.9], [0.9, 0.9]]) {
+  const legSpots = [[-0.9, -0.9], [0.9, -0.9], [-0.9, 0.9], [0.9, 0.9]]
+  for (const [sx, sz] of legSpots) {
     const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.18, 6, 6), legMat)
     leg.position.set(sx, 3, sz)
     leg.rotation.z = -sx * 0.06
     leg.rotation.x = sz * 0.06
     g.add(leg)
   }
-  const tank = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 1.8, 2.4, 14), toonMaterial(0x7d5228, { steps: 3 }))
+  const braceMat = toonMaterial(0x4a2f1a, { steps: 2 })
+  const faces = [
+    { pos: [0, 3, -0.9], axis: 'z' },
+    { pos: [0, 3, 0.9], axis: 'z' },
+    { pos: [-0.9, 3, 0], axis: 'x' },
+    { pos: [0.9, 3, 0], axis: 'x' },
+  ]
+  for (const f of faces) {
+    for (const sign of [1, -1]) {
+      const brace = new THREE.Mesh(new THREE.BoxGeometry(0.08, 4.5, 0.08), braceMat)
+      brace.position.set(...f.pos)
+      if (f.axis === 'z') brace.rotation.z = sign * 0.62
+      else brace.rotation.x = sign * 0.62
+      g.add(brace)
+    }
+  }
+  const ladderMat = toonMaterial(0x3a2a1c, { steps: 2 })
+  const ladderX = 0.9
+  const ladderZ = -1.05
+  for (const dx of [-0.15, 0.15]) {
+    const upright = new THREE.Mesh(new THREE.BoxGeometry(0.05, 6, 0.05), ladderMat)
+    upright.position.set(ladderX + dx, 3, ladderZ)
+    g.add(upright)
+  }
+  for (let i = 0; i < 6; i++) {
+    const rung = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.05, 0.05), ladderMat)
+    rung.position.set(ladderX, 0.6 + i * 0.95, ladderZ)
+    g.add(rung)
+  }
+  const tank = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 1.8, 2.4, 14), toonMaterial(0xe8dcc0, { steps: 3 }))
   tank.position.y = 7.2
   g.add(tank)
+  const bandMat = toonMaterial(0x3a2a1c, { steps: 2 })
+  for (const y of [6.4, 8.0]) {
+    const band = new THREE.Mesh(new THREE.TorusGeometry(1.85, 0.08, 8, 20), bandMat)
+    band.rotation.x = Math.PI / 2
+    band.position.y = y
+    g.add(band)
+  }
   const roof = new THREE.Mesh(new THREE.ConeGeometry(2.0, 1.2, 14), toonMaterial(0x4a2f1a, { steps: 2 }))
   roof.position.y = 9.0
   g.add(roof)
+  const finial = new THREE.Mesh(new THREE.SphereGeometry(0.35, 10, 8), toonMaterial(0xc9a227, { steps: 2 }))
+  finial.position.y = 9.75
+  g.add(finial)
+  g.scale.setScalar(1.35)
   return addOutline(g, { thickness: 0.04 })
 }
 
@@ -639,10 +719,12 @@ export class World {
     this.scene = scene
     this.size = SIZE
     this.obstacles = []
-    // Near/far pushed out (was 32/105, which washed the whole 120-unit field
-    // to one cream value past the fence line) so fog only touches the
-    // treeline ring (HALF+6 = 66u) and never the played field itself.
-    this.scene.fog = new THREE.Fog(FOG_COLOR, 85, 200)
+    // Pulled back in (was 85/200, under which the farthest visible ground —
+    // ~90u — received essentially zero fog, so distant grass held the same
+    // saturation/value as foreground grass: the single strongest
+    // "game engine, not painting" tell). 30/140 gives real aerial
+    // perspective across the played field while still reaching the treeline.
+    this.scene.fog = new THREE.Fog(FOG_COLOR, 30, 140)
     this._buildSky()
     this._buildLights()
     this._buildGround()
@@ -671,13 +753,18 @@ export class World {
 
   _buildSky() {
     this.scene.add(buildSkyDome())
+    // Far and high: radius 130..190 keeps every cloud well past the treeline
+    // so none can loom prop-sized over the field; y 20..30 at that distance
+    // subtends roughly +2..+6deg from the default camera — inside the sky band
+    // but above the painted ridge. (y=4..9 at radius 55..90 put whole clouds
+    // ON the lawn; a ~14-unit puff 60 units out filled a third of the frame.)
     const spots = [
-      { x: -46, y: 15, z: -18, s: 1.4, ry: 0.4 },
-      { x: -20, y: 18, z: -46, s: 1.7, ry: 1.1 },
-      { x: 18, y: 16, z: -50, s: 1.2, ry: 2.3 },
-      { x: 46, y: 20, z: -10, s: 1.5, ry: 3.0 },
-      { x: 50, y: 14, z: 24, s: 1.1, ry: 0.7 },
-      { x: -12, y: 22, z: 48, s: 1.3, ry: 2.0 },
+      { x: -120, y: 22, z: -95, s: 1.4, ry: 0.4 },
+      { x: -55, y: 25, z: -150, s: 1.7, ry: 1.1 },
+      { x: 40, y: 28, z: -165, s: 1.2, ry: 2.3 },
+      { x: 130, y: 24, z: -80, s: 1.5, ry: 3.0 },
+      { x: 165, y: 21, z: 30, s: 1.1, ry: 0.7 },
+      { x: -150, y: 26, z: 40, s: 1.3, ry: 2.0 },
     ]
     for (const spot of spots) {
       const cloud = buildCloud()
@@ -724,20 +811,29 @@ export class World {
     const ground = new THREE.Mesh(geo, mat)
     ground.receiveShadow = true
     this.scene.add(ground)
-    this.scene.add(buildFarBackdropGround(this.size))
+    this.scene.add(buildFarBackdropGround())
     this._placeCloudShadowMass()
   }
 
-  /** Large soft dark-green cloud-shadow decal across the bottom ~20% of the
-   * field (the foreground band nearest the default camera at z=30, looking
-   * toward -z) — anchors the composition with a dark mass to read the
-   * midtone field against, per the dark-foreground/light-middle staging a
-   * theatrical background needs and the flat single-midtone slab lacked. */
+  /** Cloud-shadow decal crossing the near third of the visible field —
+   * anchors the composition with a dark mass to read the midtone field
+   * against, per the dark-foreground/light-middle staging a theatrical
+   * background needs. Was centered at z=46, entirely behind the z=20 camera
+   * (which looks toward -z) and so never rendered at all — the single
+   * biggest reason the frame floated at one flat midtone. A real 3D cloud
+   * sits above it so the shadow has a visible cause. */
   _placeCloudShadowMass() {
-    const mass = buildCloudShadowMass(100, 28)
-    mass.position.set(8, 0.03, 46)
-    mass.rotation.y = 0.12
+    const mass = buildCloudShadowMass(70, 34)
+    mass.position.set(-4, 0.03, 4)
+    mass.rotation.y = 0.35
     this.scene.add(mass)
+    // High overhead along the sun line — a passing cloud, not a parked
+    // zeppelin. At y=36 it sits above the pitched-down frame, exactly like
+    // the sun: the shadow is on stage, the cause is implied.
+    const cause = buildCloud()
+    cause.scale.set(2.2, 2.2 * 0.55, 2.2)
+    cause.position.set(18, 36, 20)
+    this.scene.add(cause)
   }
 
   _addToScene(mesh, x, z, rotY = 0) {
@@ -768,7 +864,7 @@ export class World {
     }
   }
 
-  _placeGate(x, z) {
+  _placeGate(x, z, rotY = 0) {
     const g = new THREE.Group()
     const mat = toonMaterial(0xb07a3e, { steps: 3 })
     for (const y of [0.84, 0.46]) {
@@ -779,7 +875,7 @@ export class World {
     const post = new THREE.Mesh(new THREE.BoxGeometry(0.2, 1.2, 0.2), mat)
     post.position.set(-1.8, 0.55, 0)
     g.add(post)
-    g.rotation.y = -0.55 // swung open into the paddock
+    g.rotation.y = -0.55 + rotY // swung open into the paddock, plus paddock rotation
     g.position.set(x, 0, z)
     addOutline(g, { thickness: 0.03 })
     enableShadows(g)
@@ -814,22 +910,46 @@ export class World {
   _placeLandmarks() {
     this._place(buildSilo(), -42, -34, 1.6, 0.3)
     this._place(buildWindmill(), 30, -50, 1.0, -0.4)
-    this._place(buildWaterTower(), -8, -54, 1.3, 0.8)
+    this._place(buildWaterTower(), -8, -54, 1.75, 0.8) // radius bumped for the 1.35x model scale
   }
 
   _placeBarn() {
     this._place(makeBarn(), 11, -14, 5.6, 0)
   }
 
+  /** Closed loop with a gate gap on the south side and a swing-gate prop
+   * bridging it, rotated ~22deg off the view ray and shifted east. The west
+   * run used to sit at x=2 running along z with the camera at x=6 — almost
+   * directly away from the eye, so it projected as one unbroken line from
+   * the bottom edge to the barn and split the frame in two. Rotating the
+   * whole assembly means no run stays parallel to any view ray, and shifting
+   * east (x 12..38) clears the near-center where the chicken/player action
+   * happens. */
   _placePaddock() {
-    // Closed loop (was four orphaned runs) with a gate gap on the south
-    // side and a swing-gate prop bridging it.
-    this._placeFenceLine(12, 8, -9, 0) // south, west of gate
-    this._placeFenceLine(12, 24, -9, 0) // south, east of gate
-    this._placeFenceLine(28, 30, 5, Math.PI / 2) // east
-    this._placeFenceLine(28, 16, 19, 0) // north
-    this._placeFenceLine(28, 2, 5, Math.PI / 2) // west
-    this._placeGate(16, -9)
+    const rot = THREE.MathUtils.degToRad(22)
+    const shiftX = 10
+    const pivot = { x: 26, z: 5 }
+    const rotate = (x, z) => {
+      const dx = x + shiftX - pivot.x
+      const dz = z - pivot.z
+      return {
+        x: pivot.x + dx * Math.cos(rot) - dz * Math.sin(rot),
+        z: pivot.z + dx * Math.sin(rot) + dz * Math.cos(rot),
+      }
+    }
+    const runs = [
+      { len: 12, x: 8, z: -9, r: 0 }, // south, west of gate
+      { len: 12, x: 24, z: -9, r: 0 }, // south, east of gate
+      { len: 28, x: 30, z: 5, r: Math.PI / 2 }, // east
+      { len: 28, x: 16, z: 19, r: 0 }, // north
+      { len: 28, x: 2, z: 5, r: Math.PI / 2 }, // west
+    ]
+    for (const run of runs) {
+      const p = rotate(run.x, run.z)
+      this._placeFenceLine(run.len, p.x, p.z, run.r + rot)
+    }
+    const gate = rotate(16, -9)
+    this._placeGate(gate.x, gate.z, rot)
   }
 
   _placeHaystacks() {
@@ -963,13 +1083,17 @@ export class World {
     this._placeTreeline()
   }
 
-  /** Deliberate near-camera silhouette arch (was two accidental trees
-   * hanging inside the start camera's near view) — darker, cooler leaf tone
-   * so it reads as a frame rather than competing with the field. */
+  /** Deliberate near-camera silhouette arch (repoussoir) — was placed at
+   * (40,30)/(44,18)/(34,42), all with a negative dot product against the
+   * default camera's (6,8,20)->(-6,0,-22) forward vector, i.e. entirely
+   * behind the eye and never rendered. Moved inside the near third of the
+   * frustum so crowns break the top edge and trunks break the left/right
+   * edges. Tint pushed darker still (was 0x2f6b28) — a wing flat should read
+   * as a near-black shape, not a competing green. */
   _placeForegroundFrame() {
-    const spots = [{ x: 40, z: 30, s: 1.5 }, { x: 44, z: 18, s: 1.3 }, { x: 34, z: 42, s: 1.4 }]
+    const spots = [{ x: -24, z: 6, s: 2.1 }, { x: 26, z: 10, s: 1.9 }, { x: -30, z: 16, s: 1.6 }]
     for (const spot of spots) {
-      const tree = tintCanopy(makeTree(), 0x2f6b28)
+      const tree = tintCanopy(makeTree(), 0x24541f)
       tree.scale.setScalar(spot.s)
       this._place(tree, spot.x, spot.z, 1.4 * spot.s, Math.random() * Math.PI * 2)
     }
@@ -988,38 +1112,56 @@ export class World {
   }
 
   /** One clump: 4-7 trees gaussian-scattered around baseAngle, varied scale
-   * and per-instance canopy hue — never the same silhouette/size/hue twice. */
-  _placeTreeClump(baseAngle, ringR) {
+   * and per-instance canopy hue — never the same silhouette/size/hue twice.
+   * `fogMix` blends the canopy toward FOG_COLOR so a far-rank clump reads as
+   * a pale silhouette band under the 30/140 fog instead of holding full
+   * canopy saturation to the horizon. */
+  _placeTreeClump(baseAngle, ringR, { scaleMin = 0.7, scaleMax = 1.7, fogMix = 0 } = {}) {
     const treeCount = 4 + Math.floor(Math.random() * 4)
     for (let i = 0; i < treeCount; i++) {
-      const angle = baseAngle + gaussianRandom(0.1)
-      const r = ringR + gaussianRandom(6)
+      const angle = baseAngle + gaussianRandom(0.06)
+      const r = ringR + gaussianRandom(4)
       const x = Math.cos(angle) * r
       const z = Math.sin(angle) * r
-      const scale = 0.7 + Math.random() * 1.0
+      const scale = scaleMin + Math.random() * (scaleMax - scaleMin)
       if (!this._isClearSpot(x, z, 1.1 * scale)) continue
-      const farT = smooth01(r, ringR - 6, ringR + 16)
       const base = TREE_BASE_HUES[Math.floor(Math.random() * TREE_BASE_HUES.length)]
       const hueDeg = (Math.random() - 0.5) * 24
-      const tree = tintCanopy(makeTree(), jitterCanopyColor(base, hueDeg, farT))
+      let hex = jitterCanopyColor(base, hueDeg, 0)
+      if (fogMix > 0) hex = new THREE.Color(hex).lerp(new THREE.Color(FOG_COLOR), fogMix).getHex()
+      const tree = tintCanopy(makeTree(), hex)
       tree.scale.setScalar(scale)
       this._place(tree, x, z, 1.1 * scale, Math.random() * Math.PI * 2)
     }
   }
 
-  /** Forest border as clumps, not an evenly-spaced ring of identical
-   * lollipops: 7-9 clusters (2 of 10 candidate slots left as deliberate gaps
-   * so the eye can see through to the backdrop) pushed past HALF so the
-   * fog knee (near=85) actually reaches them before the frame edge. */
+  /** Forest border built as two depth ranks instead of one uniform ring. The
+   * old ring treated all 10 candidate slots as equally likely to be seen, but
+   * against the default camera (forward ~(-6,0,-22), 34deg half-FOV off-axis)
+   * only 3 of 10 ever fell inside frame — the other 7 were behind/beside the
+   * eye, and random gaps could delete a third of the 3 that mattered. Now 6
+   * clumps are spread across the camera-facing arc only (195-345deg, i.e.
+   * negative-z / away-from-camera) and NEVER gapped, each doubled into a near
+   * rank (r=72, bold/dark, full saturation) and a far rank (r=100, larger,
+   * 60% toward FOG_COLOR so it reads as a pale silhouette band). 4 sparse
+   * clumps cover the rest of the ring for when the player orbits around. */
   _placeTreeline() {
-    const ringR = HALF + 6
-    const slots = 10
-    const gapSlots = new Set()
-    while (gapSlots.size < 2) gapSlots.add(Math.floor(Math.random() * slots))
-    for (let slot = 0; slot < slots; slot++) {
-      if (gapSlots.has(slot)) continue
-      const baseAngle = (slot / slots) * Math.PI * 2 + (Math.random() - 0.5) * 0.3
-      this._placeTreeClump(baseAngle, ringR)
+    const nearR = 72
+    const farR = 100
+    const facingCount = 6
+    for (let i = 0; i < facingCount; i++) {
+      const t = facingCount === 1 ? 0 : i / (facingCount - 1)
+      const angleDeg = 195 + t * (345 - 195)
+      const baseAngle = THREE.MathUtils.degToRad(angleDeg) + (Math.random() - 0.5) * 0.15
+      this._placeTreeClump(baseAngle, nearR, { scaleMin: 1.4, scaleMax: 2.2, fogMix: 0 })
+      this._placeTreeClump(baseAngle, farR, { scaleMin: 2.0, scaleMax: 3.0, fogMix: 0.6 })
+    }
+    const sparseCount = 4
+    for (let i = 0; i < sparseCount; i++) {
+      const angleDeg = 345 + Math.random() * 210 // wraps through 360 to 195
+      const baseAngle = THREE.MathUtils.degToRad(angleDeg % 360)
+      const far = Math.random() < 0.5
+      this._placeTreeClump(baseAngle, far ? farR : nearR, { scaleMin: 1.2, scaleMax: 2.4, fogMix: far ? 0.6 : 0 })
     }
   }
 }

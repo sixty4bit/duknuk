@@ -457,15 +457,59 @@ export function makeBarn() {
 
 // --------------------------------------------------------------------- props
 
-function buildFence(length) {
-  const g = new THREE.Group()
-  const spans = Math.max(1, Math.round(length / 2.2))
-  const gap = length / spans
+// A fence is the longest straight edge in the frame, so it is the one prop that
+// can betray the whole drawing: one 28-unit box for a rail and a uniform gap
+// between posts is extruded CAD sitting next to a hand-wobbled barn. Every post
+// leans its own way, sits at its own height, and every span of rail is a
+// separate stick with its own sag, roll and length. Seeded off `length`, so a
+// given fence is the same fence on every reload.
+const FENCE = {
+  spanTarget: 2.2,
+  postH: 1.2,
+  postSink: 0.05,
+  /** Every Nth post is driven deeper — a run nobody measured. */
+  deepEvery: 5,
+  deepBy: 0.15,
+  railY: [0.84, 0.46],
+}
+
+/** Posts with per-post lean, height and depth. Both ends stay on the nominal
+ *  span so the fence still measures `length` end to end for placement code. */
+function fencePosts(rnd, length, spans, gap) {
+  const posts = new THREE.Group()
+  const xs = []
   for (let i = 0; i <= spans; i++) {
-    const post = rot(box(0.19, 1.2, 0.2, P.cream), 0, 0, (i % 2 ? 1 : -1) * 0.03)
-    g.add(at(post, -length / 2 + i * gap, 0.55, 0))
+    const end = i === 0 || i === spans
+    const x = -length / 2 + i * gap + (end ? 0 : (rnd() - 0.5) * 0.16)
+    const h = FENCE.postH + (rnd() - 0.5) * 0.24
+    const sunk = i % FENCE.deepEvery === FENCE.deepEvery - 1 ? FENCE.deepBy : 0
+    const post = rot(box(0.19, h, 0.2, P.cream), 0, (rnd() - 0.5) * 0.18, (rnd() - 0.5) * 0.28)
+    posts.add(at(post, x, h / 2 - FENCE.postSink - sunk, (rnd() - 0.5) * 0.06))
+    xs.push(x)
   }
-  for (const y of [0.84, 0.46]) g.add(at(box(length, 0.15, 0.12, P.cream), 0, y, 0.03))
+  return { posts, xs }
+}
+
+/** One stick per span, overlapping its posts by a hair so a short cut hides
+ *  behind the post instead of opening a gap. */
+function fenceRails(rnd, xs, y) {
+  const rails = new THREE.Group()
+  for (let i = 0; i < xs.length - 1; i++) {
+    const len = xs[i + 1] - xs[i] + 0.04 + (rnd() - 0.5) * 0.16
+    const rail = rot(box(len, 0.15, 0.12, P.cream), 0, 0, (rnd() - 0.5) * 0.12)
+    rails.add(at(rail, (xs[i] + xs[i + 1]) / 2, y + (rnd() - 0.5) * 0.08, 0.03))
+  }
+  return rails
+}
+
+function buildFence(length) {
+  const rnd = seeded(Math.round(length * 97))
+  const g = new THREE.Group()
+  const spans = Math.max(1, Math.round(length / FENCE.spanTarget))
+  const gap = length / spans
+  const { posts, xs } = fencePosts(rnd, length, spans, gap)
+  g.add(posts)
+  for (const y of FENCE.railY) g.add(fenceRails(rnd, xs, y))
   return addOutline(g)
 }
 
