@@ -1,6 +1,20 @@
 import * as THREE from 'three'
-import { toonMaterial, addOutline } from './art/toon.js'
-import { makeBarn, makeFence, makeHaystack, makePig, makeTree } from './art/models.js'
+import { toonMaterial, addOutline, INK_WEIGHT } from './art/toon.js'
+import {
+  makeBarn,
+  makeBirdOnPost,
+  makeCrateStack,
+  makeFence,
+  makeHaystack,
+  makeLaundryLine,
+  makeMilkCan,
+  makePeckingHen,
+  makePig,
+  makeScarecrow,
+  makeTireSwing,
+  makeTree,
+  makeWheelbarrow,
+} from './art/models.js'
 
 const SIZE = 120
 const HALF = SIZE / 2
@@ -21,6 +35,44 @@ const FOG_COLOR = 0x9fb6b0
 // SHADOW_DIR/the cel contact-shadow decals below, so the two can never drift
 // out of sync.
 const SUN_POS = new THREE.Vector3(34, 20, -10)
+
+// The opening shot, as measured rather than remembered: main.js starts the
+// camera at (-1, 9.5, 23) looking at (-1.5, 1.8, -7) through a 30deg vertical
+// FOV. Casting that frustum onto the ground gives a narrow wedge —
+//
+//   z = +6  (bottom edge)  x in [-10.3,  7.6]
+//   z =  -2                x in [-14.2, 11.2]
+//   z = -14 (frame centre) x in [-20.0, 16.4]
+//   z = -34                x in [-29.6, 25.3]
+//
+// — and the horizon sits at ny ~ +0.85, so props past z ~ -45 are a thin band
+// at the top of the frame, not staging. Anything meant to be SEEN at start has
+// to land inside that wedge; every coordinate in _placeStartViewProps,
+// _placeMidbandCluster, _placeFlowerTufts and _placePath below was projected
+// against this camera before it was written down.
+//
+// The one region deliberately kept empty is the corridor running south and
+// east from the coop door (~-5.2, -0.6) into the open field — that is where
+// the player's first patch clicks land, so nothing there registers an
+// obstacle bigger than a hen.
+
+// The near grove, hoisted out of _placeTrees because the tire swing in
+// _placeCoopYard hangs off one of these trees. A swing whose tree is a
+// duplicated literal somewhere else in the file is a swing that ends up
+// dangling in mid-air the first time the grove moves.
+//
+// Seeds and yaws are pinned, not rolled per reload. makeTree() picks between a
+// blob, a conifer and a shrub off its seed, so an unseeded grove is a grove
+// that can come up as three narrow conifers — and the swing tree in particular
+// has to be a wide blob with a bough to hang from. Seed 13 measures ~5.0 wide
+// by 5.2 tall; the others are chosen for silhouette variety beside it.
+const GROVE = [
+  { x: -16, z: -16, seed: 41, yaw: 0.8 },
+  { x: -10, z: -11, seed: 13, yaw: 2.1 }, // the swing tree
+  { x: -9, z: -17, seed: 7, yaw: 4.4 },
+  { x: -15, z: -11, seed: 2, yaw: 5.6 },
+]
+const SWING_TREE = GROVE[1]
 
 // ---------- module-level visual helpers (not part of the exported contract) ----------
 
@@ -475,12 +527,20 @@ function buildCloudShadowMass(width, depth) {
  * ground decal: explicit up normals (not computeVertexNormals(), which — combined
  * with the old winding — produced downward normals and got backface-culled
  * from the tycoon camera entirely) and a winding order that faces the sky.
- * No ink hull: a flat decal shouldn't carry an inverted-hull outline. Wins the
- * depth test against the ground via negative polygon offset instead.
+ * Wins the depth test against the ground via negative polygon offset.
  * `color`/`steps` are parameterized (not just the dirt-path defaults) so the
  * same ribbon builder can draw the mown-stripe boundary in _placeMownStripe
- * without duplicating this geometry code. */
-function buildPathMesh(points, width, { color = 0xc09a63, steps = 3, y = 0.02 } = {}) {
+ * without duplicating this geometry code.
+ *
+ * `ink` (a weight from INK_WEIGHT, or 0 for none) draws the ribbon's BOUNDARY
+ * — addOutline's `flat: true` path, which expands along the outline of the
+ * decal instead of along its face normals. The old note here said a flat decal
+ * shouldn't carry an outline; that was true of the inverted-hull outline that
+ * existed at the time and is no longer true. A road in a golden-age cartoon is
+ * a drawn shape with an edge, so the dirt path and its wagon ruts take
+ * INK_WEIGHT.DECAL. The mown stripe stays inkless — it is a mown boundary in
+ * the grass, not an object. */
+function buildPathMesh(points, width, { color = 0xc09a63, steps = 3, y = 0.02, ink = 0 } = {}) {
   const curve = new THREE.CatmullRomCurve3(points.map((p) => new THREE.Vector3(p.x, y, p.z)))
   const samples = curve.getSpacedPoints(48)
   const verts = []
@@ -514,10 +574,52 @@ function buildPathMesh(points, width, { color = 0xc09a63, steps = 3, y = 0.02 } 
     toonMaterial(color, { steps, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
   )
   mesh.receiveShadow = true
+  if (ink > 0) addOutline(mesh, { flat: true, pixels: ink })
   return mesh
 }
 
+/** The pair of wheel ruts worn into a cart track, as two narrow darker ribbons
+ * riding the same curve as the road they sit in. Offsetting the CONTROL points
+ * along the curve's own tangent normal (getTangent, not getTangentAt — the
+ * uniform parameter is what lines up with control point i) keeps both ruts
+ * parallel to the road through its bends instead of cutting the corners, which
+ * is what a naive constant XZ offset does. */
+function buildWagonRuts(points, offset, opts = {}) {
+  const spine = new THREE.CatmullRomCurve3(points.map((p) => new THREE.Vector3(p.x, 0, p.z)))
+  const ruts = new THREE.Group()
+  for (const side of [-1, 1]) {
+    const shifted = points.map((p, i) => {
+      const tan = spine.getTangent(i / (points.length - 1))
+      return { x: p.x - tan.z * offset * side, z: p.z + tan.x * offset * side }
+    })
+    // y 0.045 rather than a hair over the road's 0.02: both ribbons carry the
+    // same negative polygon offset, so the gap between them is the only thing
+    // keeping the rut off the road's own depth values.
+    ruts.add(buildPathMesh(shifted, 0.55, { color: 0x8f6b3e, steps: 2, y: 0.045, ink: INK_WEIGHT.DECAL, ...opts }))
+  }
+  return ruts
+}
+
 // ------------------------------------------------------------- scatter props
+
+/** A few splayed blades, chunky enough to read at 30 m. Grass tufts are the
+ * cheapest way to stop a stretch of ground reading as a painted plane: they
+ * put a vertical, an ink edge and a cast shadow on it. */
+function buildGrassTuft(seed) {
+  const rnd = seededRand(seed)
+  const g = new THREE.Group()
+  const mat = toonMaterial(0x5da33a, { steps: 3 })
+  for (let i = 0; i < 7; i++) {
+    const a = rnd() * Math.PI * 2
+    const r = rnd() * 0.2
+    const h = 0.45 + rnd() * 0.4
+    const blade = new THREE.Mesh(new THREE.ConeGeometry(0.075, h, 4), mat)
+    blade.position.set(Math.cos(a) * r, h / 2, Math.sin(a) * r)
+    blade.rotation.set((rnd() - 0.5) * 0.55, a, (rnd() - 0.5) * 0.55)
+    g.add(blade)
+  }
+  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+}
 
 function buildRock(seed) {
   const rnd = seededRand(seed)
@@ -569,23 +671,10 @@ function buildTrough() {
   return addOutline(g, { thickness: 0.02 })
 }
 
-function buildWheelbarrow() {
-  const g = new THREE.Group()
-  const bin = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.35, 0.55), toonMaterial(0xb3401f, { steps: 3 }))
-  bin.position.set(0, 0.35, 0)
-  bin.rotation.x = -0.12
-  g.add(bin)
-  const wood = toonMaterial(0x7d5228, { steps: 3 })
-  const wheel = new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.05, 8, 14), wood)
-  wheel.position.set(0, 0.2, 0.5)
-  g.add(wheel)
-  for (const s of [-1, 1]) {
-    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.3, 0.06), wood)
-    leg.position.set(0.3 * s, 0.15, -0.15)
-    g.add(leg)
-  }
-  return addOutline(g, { thickness: 0.015 })
-}
+// The local buildWheelbarrow() that used to live here is gone: models.js owns
+// makeWheelbarrow() now, and a second, worse copy of a prop in the world file
+// is exactly the kind of drift that leaves half the farm drawn in one hand and
+// half in another.
 
 // -------------------------------------------------------- vertical landmarks
 
@@ -935,23 +1024,55 @@ export class World {
     sun.position.copy(SUN_POS)
     sun.target.position.set(0, 0, 0)
     sun.castShadow = true
-    // Widened 30 -> 42: a grazing-elevation sun throws longer shadows, and
-    // SHADOW_SQUASH going 1.35 -> 2.0 stretches the painted contact-shadow
-    // ellipses too — both need the real shadow-map frustum to reach back
-    // further or the lengthened shapes clip at the map's edge.
-    const reach = 42
-    Object.assign(sun.shadow.camera, { left: -reach, right: reach, top: reach, bottom: -reach, near: 1, far: 150 })
-    sun.shadow.mapSize.set(2048, 2048)
-    // normalBias (not bias) is the correct control for acne on geometry with
-    // depth like the barn eaves — the old bias-only setup was reading on
-    // screen as a shadow-moiré crosshatch pattern on the barn's trim.
-    sun.shadow.bias = -0.0005
-    sun.shadow.normalBias = 0.05
-    sun.shadow.radius = 0 // hard map edge — cel shadows are drawn shapes, not photographic blur
+    this._configureSunShadow(sun)
     this.scene.add(sun, sun.target)
     // Warm ambient (was cool blue 0xbcd9ff) so shadowed faces keep their hue
     // instead of draining to grey-green, and read brighter (~55-60%).
     this.scene.add(new THREE.AmbientLight(0xffe6c0, 0.75))
+  }
+
+  /** The barn's cast shadow was arriving as a stair-stepped polygon, and the
+   * cause was texel size, not filtering: a 42-unit square ortho box on a 2048
+   * map spends one shadow texel every 0.041 world units, the barn's gambrel
+   * roof edge crosses that grid at a shallow angle, and PCFShadowMap with
+   * radius 0 (main.js keeps cel edges hard on purpose) quantises the crossing
+   * into visible stairs.
+   *
+   * So: 4096 map, and the box cut to the smallest one that still covers the
+   * start view rather than a number guessed in world space. The staged view
+   * lives inside |x|,|z| <= 36 with the barn ridge and the near trees under
+   * y = 14; projecting that box's corners into this light's view space (sun at
+   * (34,20,-10) looking at the origin) gives half-extents of 44.7 x 34.2 —
+   * wider than 36 because the light's azimuth runs diagonally across the box.
+   * Rounded up to 44.8 x 34.3 that is 0.022 x 0.017 world units per texel,
+   * 1.9x and 2.4x finer than before, which puts the stair tread under one
+   * screen pixel at the start camera's scale.
+   *
+   * `near` is NEGATIVE on purpose: part of that box sits behind the light's
+   * own position along its view direction (the corner nearest the sun is
+   * ~5 units past it), and an orthographic projection is perfectly happy with
+   * that. A positive near would clip the casters closest to the sun — the
+   * barn among them — and delete the very shadow this is fixing.
+   *
+   * The cost is that the horizon landmarks and the treeline (r 72-100) fall
+   * outside the box and stop casting real-time shadows. They keep their
+   * painted contact-shadow ellipses from _place(), their own shadows landed
+   * off-frame or in full fog anyway, and none of them can cast INTO the staged
+   * view from out there. */
+  _configureSunShadow(sun) {
+    const cam = sun.shadow.camera
+    Object.assign(cam, { left: -44.8, right: 44.8, top: 34.3, bottom: -34.3, near: -10, far: 90 })
+    cam.updateProjectionMatrix()
+    sun.shadow.mapSize.set(4096, 4096)
+    // Bias is a multiple of texel size in effect, so halving the texel has to
+    // pull both constants down with it — held at 0.05, normalBias would now
+    // peel the barn's own shadow off its sill and float the crate stack.
+    // normalBias (not bias) remains the control that kills acne on geometry
+    // with real depth like the barn eaves.
+    sun.shadow.bias = -0.00035
+    sun.shadow.normalBias = 0.028
+    // Hard map edge — cel shadows are drawn shapes, not photographic blur.
+    sun.shadow.radius = 0
   }
 
   _buildGround() {
@@ -999,11 +1120,29 @@ export class World {
     return mesh
   }
 
-  _place(mesh, x, z, r, rotY = 0) {
-    this._addToScene(mesh, x, z, rotY)
+  /** The painted cel shadow alone, for things that ground themselves in pieces
+   * (a clothesline is two poles, not one blob). */
+  _addContactShadow(x, z, r) {
     const shadow = buildContactShadow(r * 1.3)
-    shadow.position.set(x + SHADOW_DIR.x * r * SHADOW_OFFSET, 0.015, z + SHADOW_DIR.y * r * SHADOW_OFFSET)
+    const [ox, oz] = [SHADOW_DIR.x * r * SHADOW_OFFSET, SHADOW_DIR.y * r * SHADOW_OFFSET]
+    shadow.position.set(x + ox, 0.015, z + oz)
     this.scene.add(shadow)
+    return shadow
+  }
+
+  /** Staged prop: in the scene, grounded by a painted contact shadow, but NOT
+   * an obstacle. This is what small incidental things use — hens, grass tufts,
+   * milk cans — anything a chicken would walk straight past. Splitting it out
+   * of _place is what lets a density pass add dozens of props without silently
+   * walling in the field the player has to click on. */
+  _placeDecor(mesh, x, z, shadowR, rotY = 0) {
+    this._addToScene(mesh, x, z, rotY)
+    this._addContactShadow(x, z, shadowR)
+    return mesh
+  }
+
+  _place(mesh, x, z, r, rotY = 0) {
+    this._placeDecor(mesh, x, z, r, rotY)
     this.addObstacle(x, z, r)
     return mesh
   }
@@ -1053,6 +1192,12 @@ export class World {
     this._placePig()
     this._placeCrops()
     this._placePond()
+    // The near grove comes up here, ahead of the props, because the tire swing
+    // measures its tree's real canopy before it can decide how long its rope is.
+    this._placeGrove()
+    // Before _placeScatter, so the scatter passes' _findScatterSpot sees the
+    // staged props as obstacles and doesn't drop a rock inside the crate stack.
+    this._placeStartViewProps()
     this._placeScatter()
     this._placeMownStripe()
     this._placePath()
@@ -1098,7 +1243,13 @@ export class World {
       { len: 12, x: 24, z: -9, r: 0 }, // south, east of gate
       { len: 28, x: 30, z: 5, r: Math.PI / 2 }, // east
       { len: 28, x: 16, z: 19, r: 0 }, // north
-      { len: 28, x: 2, z: 5, r: Math.PI / 2 }, // west
+      // West run, shortened 28 -> 20 and slid north. At its old length it came
+      // out of rotate() ending at world (7.8,-13.2) — INSIDE the barn, whose
+      // footprint is x[5.6,16.5] z[-18,-10]. Rails were growing out of the
+      // barn's west wall and the run crossed the door line at x=9.1, so the
+      // farm's main road physically could not leave its own barn doors. It now
+      // stops at (10.8,-5.8), clear of both the barn and the cart track.
+      { len: 20, x: 4.8, z: 7.9, r: Math.PI / 2 }, // west
     ]
     for (const run of runs) {
       const p = rotate(run.x, run.z)
@@ -1149,23 +1300,132 @@ export class World {
     this.addObstacle(x, z, r)
   }
 
+  /** The near grove: pulled inward (was -24..-26,-17..-22, out where fog ate
+   * it) to x -18..-8, z -18..-8 so the left midfield carries real mass at
+   * readable scale instead of leaving that depth band undifferentiated. The
+   * swing tree is kept so _placeTireSwing can measure the bough it hangs from. */
+  _placeGrove() {
+    for (const s of GROVE) {
+      const tree = this._place(makeTree(s.seed), s.x, s.z, 1.1, s.yaw)
+      if (s === SWING_TREE) this._swingTree = tree
+    }
+  }
+
+  /** The density pass. See the START-VIEW note at the top of this file for the
+   * measured ground wedge these coordinates were fitted to — the frame is
+   * narrow (x -14..11 at the coop's depth), so "somewhere on the left" is not
+   * a placement, it is a miss. Three yards' worth of incident, each a small
+   * cluster rather than a lone prop: nothing on this farm should be the only
+   * thing happening where it stands. */
+  _placeStartViewProps() {
+    this._placeCoopYard()
+    this._placeBarnYard()
+    this._placeFencePerches()
+  }
+
+  /** Left and centre of frame: the coop's own yard. The scarecrow is the one
+   * vertical between the pond and the coop and lands at nx -0.70 — far enough
+   * left to hold that third of the frame without crowding the coop. Laundry
+   * strings BEHIND the coop (smaller z) so it layers into depth instead of
+   * standing beside it, and the tire swing hangs off SWING_TREE at (-10,-11).
+   * Hens get no obstacle: they are the size of the animal that has
+   * to walk past them, and the corridor south of the door is theirs. */
+  _placeCoopYard() {
+    this._place(makeScarecrow(), -10.8, -3.2, 0.6, 0.45)
+    this._placeLaundryLine()
+    this._placeTireSwing()
+    this._placeDecor(makePeckingHen(), -3.6, 0.8, 0.35, 2.3)
+    this._placeDecor(makePeckingHen(), -7.8, 1.2, 0.35, -1.1)
+  }
+
+  /** makeTireSwing takes the height of its rope-top and puts its group origin
+   * on the ground under the tire, so the swing has to be told how big the tree
+   * it hangs from actually is. That is MEASURED off the built tree, not
+   * guessed: makeTree picks blob/conifer/shrub and a trunk height off its seed,
+   * so a hardcoded rope length is a rope ending in open sky the day that seed
+   * changes. The rope top lands just inside the leaf mass and the tire swings
+   * out on the camera side, clear of the trunk. */
+  _placeTireSwing() {
+    const bounds = new THREE.Box3().setFromObject(this._swingTree)
+    const reach = THREE.MathUtils.clamp((bounds.max.x - bounds.min.x) * 0.32, 1.0, 2.0)
+    const ropeTop = THREE.MathUtils.clamp(bounds.max.y - 1.3, 2.2, 4.2)
+    this._place(makeTireSwing(ropeTop), SWING_TREE.x + reach, SWING_TREE.z + reach * 0.85, 0.5, -0.6)
+  }
+
+  /** Two poles and a sagging run of washing, angled ~20deg off the view ray so
+   * it reads as a line receding rather than a bar across the frame. The run is
+   * registered as its two POLES, not one circle: a chicken can walk under a
+   * clothesline, and a single obstacle spanning it would wall off the north
+   * side of the coop yard for no reason. */
+  _placeLaundryLine() {
+    const [cx, cz, rotY] = [-6.2, -6.4, -0.358]
+    const line = makeLaundryLine()
+    // Measured off the model, not assumed: models.js owns how long the run is,
+    // and a hardcoded half-span here would put the blocking circles somewhere
+    // the poles aren't the moment that prop is restyled. Measured BEFORE the
+    // group is rotated, so this is its local extent along the run.
+    const size = new THREE.Box3().setFromObject(line).getSize(new THREE.Vector3())
+    const halfRun = Math.max(0.5, Math.max(size.x, size.z) / 2 - 0.3)
+    this._addToScene(line, cx, cz, rotY)
+    for (const s of [-1, 1]) {
+      const px = cx + Math.cos(rotY) * halfRun * s
+      const pz = cz - Math.sin(rotY) * halfRun * s
+      this._addContactShadow(px, pz, 0.45)
+      this.addObstacle(px, pz, 0.45)
+    }
+  }
+
+  /** Right of frame: the working apron in front of the barn doors. The barn
+   * sits at (11,-14) with its door wall at z ~ -9.98 spanning x 5.6..16.5, so
+   * everything here hugs z ~ -9 — a metre proud of the wall, clear of the
+   * mesh, and still inside the frame's right edge (the milk cans at nx 0.91
+   * and 0.95 are the tightest fit in the whole staging). The wheelbarrow sits
+   * on the outside of the path's bend where the cart track leaves the doors. */
+  _placeBarnYard() {
+    this._place(makeCrateStack(), 5.9, -9.3, 0.9, 0.35)
+    this._placeDecor(makeMilkCan(), 12.9, -9.1, 0.4, 0.8)
+    this._placeDecor(makeMilkCan(), 13.7, -9.5, 0.4, -0.5)
+    this.addObstacle(13.3, -9.3, 0.75) // the pair, as one blocking circle
+    this._place(makeWheelbarrow(), 6.84, -3.16, 0.6, -0.9)
+    this._place(buildTrough(), 9.3, -2.9, 0.9, 0.35 + Math.PI / 2)
+  }
+
+  /** Three perches, deliberately spread left / centre / right rather than
+   * clustered, because a bird is a punctuation mark and three of them in one
+   * corner punctuate nothing. Right: just west of where the paddock's west run
+   * now terminates, so it reads as that fence's last post. Centre: out in the
+   * bare mid-band. Left: between the pond and the grove, clear of both. Each
+   * comes with its own post, so none of them depends on a fence being there. */
+  _placeFencePerches() {
+    const perches = [
+      { x: 10.2, z: -4.9, rotY: -1.9 },
+      { x: -1.2, z: -9.0, rotY: 0.7 },
+      { x: -12.4, z: -9.2, rotY: 2.4 },
+    ]
+    for (const p of perches) this._place(makeBirdOnPost(), p.x, p.z, 0.3, p.rotY)
+  }
+
   _placeScatter() {
     this._placeFlowerTufts()
     this._placeRocks()
+    this._placeMidbandCluster()
     this._placeStumps()
     this._placeYardProps()
   }
 
-  /** Grouped by color — one drift of red, one of yellow, one of purple — so
-   * each cluster reads as a single accent mass instead of scattering as
-   * mixed-color confetti (was one `colors` array cycled per-instance across
-   * every cluster). Tripled scale + tightened per-drift count to the 5-6
-   * readable-mass range the critic called for (was 9/7/6 at 1x scale). */
+  /** Grouped by color so each drift reads as one accent mass rather than
+   * mixed-color confetti. Both drifts now sit in the mid-band between the coop
+   * (-6,-2) and the barn (11,-14) — the dead diagonal the critic's "six props
+   * on an acre" note was really about. The old third drift at (5,32) and the
+   * yellow one at (-12,8) were behind the start camera's near ground edge
+   * (z ~ +6) and had never been on screen at all; a decoration nobody can see
+   * is not decoration, so they are folded into these two. Spread is halved to
+   * 5 (a +/-2.5 box) so each drift is a clump you could put a hand over, not a
+   * sprinkle across a quarter of the field. */
   _placeFlowerTufts() {
     const drifts = [
-      { x: 6, z: -4, spread: 10, count: 5, color: 0xe6483c },
-      { x: -12, z: 8, spread: 10, count: 6, color: 0xf2c230 },
-      { x: 5, z: 32, spread: 12, count: 5, color: 0xc060d6 },
+      { x: -0.5, z: -5.5, spread: 5, count: 6, color: 0xe6483c },
+      { x: 5, z: -10.5, spread: 5, count: 6, color: 0xc060d6 },
     ]
     for (const d of drifts) {
       for (let n = 0; n < d.count; n++) {
@@ -1194,6 +1454,29 @@ export class World {
     }
   }
 
+  /** The low-rock-and-grass note that ties the two flower drifts together, at
+   * (3,-8) — dead centre of the coop-to-barn diagonal, nx 0.29 / ny -0.18 in
+   * the opening frame. Rocks bring the one cool grey in that whole third of
+   * the picture and the tufts break the ground plane between them; together
+   * they are the reason the eye now travels from the coop to the barn over
+   * something instead of across a green void. Tufts register no obstacle —
+   * they are grass, and a chicken walks through grass. */
+  _placeMidbandCluster() {
+    const rocks = [{ x: 2.4, z: -8.4, s: 1.15 }, { x: 3.9, z: -7.2, s: 0.8 }]
+    let seed = 900
+    for (const r of rocks) {
+      const rock = buildRock(seed++)
+      rock.scale.setScalar(r.s)
+      this._place(rock, r.x, r.z, 0.45 * r.s, seed * 0.7)
+    }
+    const tufts = [[1.9, -7.0], [3.1, -6.4], [4.6, -8.3], [2.9, -9.4], [4.9, -6.6], [1.5, -8.9]]
+    for (const [x, z] of tufts) {
+      const tuft = buildGrassTuft(seed++)
+      tuft.scale.setScalar(1.1 + (seed % 5) * 0.08)
+      this._placeDecor(tuft, x, z, 0.3, seed * 1.3)
+    }
+  }
+
   _placeStumps() {
     for (let i = 0; i < 6; i++) {
       const a = Math.random() * Math.PI * 2
@@ -1204,33 +1487,49 @@ export class World {
     }
   }
 
+  /** The trough and the wheelbarrow used to be scattered here at random inside
+   * a +/-3 box, which is how a wheelbarrow ended up parked behind the barn
+   * where nobody could see it. Both are staged deliberately now — see
+   * _placeBarnYard — so what is left is the back-of-house dressing, out past
+   * the paddock where the start camera can't reach and only an orbiting player
+   * ever sees it. */
   _placeYardProps() {
-    const trough = this._findScatterSpot(6, -6, 6)
-    if (trough) this._place(buildTrough(), trough.x, trough.z, 0.9)
-    const barrow = this._findScatterSpot(6, -17, 5)
-    if (barrow) this._place(buildWheelbarrow(), barrow.x, barrow.z, 0.6, Math.random() * Math.PI * 2)
+    const spare = this._findScatterSpot(-24, -20, 8)
+    if (spare) this._place(buildTrough(), spare.x, spare.z, 0.9, Math.random() * Math.PI * 2)
   }
 
+  /** The cart track, and the strongest leading line in the frame — it is the
+   * only drawn shape that crosses the whole picture.
+   *
+   * It had to be re-routed. The old run went barn doors -> (16,-9) -> (19,-2)
+   * -> (15,8), which was staged for the previous camera at (2,14,34)/FOV 34.
+   * Against the current start camera the frame's right edge is x=14.4 at
+   * z=-9 and x=11.2 at z=-2, so every control point after the first was
+   * outside the picture: the farm's main road was invisible at start, and so
+   * were any ruts drawn in it. It now leaves the doors and sweeps south-west
+   * across the near field to exit the bottom-left corner, which puts it in
+   * frame for its whole visible length (nx 0.77 at the barn down to -0.12 as
+   * it leaves) and drags the eye from the barn back to the coop yard.
+   *
+   * It also passes within ~1.2 of the dozing pig at (-3,6) — half the road's
+   * width — so the pig is now literally lying in the path, which is what
+   * DESIGN.md asked for and what a cartoon would draw. The road is a decal and
+   * registers no obstacle, so none of this narrows the walkable corridor. */
   _placePath() {
-    // Leading line: barn doors, through the paddock gate, across the field,
-    // then west (was continuing east through (20,24)/(27,38)/(32,54), which
-    // tracked the paddock's east fence run closely enough to double as one
-    // thick rail and exit the same bottom-right corner). Swinging the lower
-    // points west sends the path under the camera and in front of the
-    // player's patch instead, and gives the empty near-center a drawn shape.
     const pts = [
-      { x: 11, z: -10.5 },
-      { x: 16, z: -9 },
-      { x: 19, z: -2 },
-      { x: 15, z: 8 },
-      { x: 14, z: 26 },
-      { x: 8, z: 40 },
-      { x: 4, z: 56 },
+      { x: 11.2, z: -10.8 }, // barn doors
+      { x: 9.0, z: -8.5 },
+      { x: 5.0, z: -5.0 },
+      { x: 1.0, z: -1.0 },
+      { x: -2.5, z: 3.5 }, // over the pig
+      { x: -5.5, z: 9.5 },
+      { x: -11.5, z: 17.5 },
+      { x: -20, z: 28 },
     ]
-    const path = buildPathMesh(pts, 3.8)
-    enableShadows(path)
+    const path = buildPathMesh(pts, 3.8, { ink: INK_WEIGHT.DECAL })
     path.receiveShadow = true
     this.scene.add(path)
+    this.scene.add(buildWagonRuts(pts, 0.95))
   }
 
   /** Drawn boundary across the empty left-center third — the largest dead
@@ -1251,11 +1550,6 @@ export class World {
   }
 
   _placeTrees() {
-    // Pulled inward (was -24..-26,-17..-22 — pushed out where fog ate it) to
-    // x -18..-8, z -18..-8 so the left midfield carries real mass at
-    // readable scale instead of leaving that depth band undifferentiated.
-    const grove = [{ x: -16, z: -16 }, { x: -10, z: -11 }, { x: -9, z: -17 }, { x: -15, z: -11 }]
-    for (const s of grove) this._place(makeTree(), s.x, s.z, 1.1, Math.random() * Math.PI * 2)
     this._placeForegroundFrame()
     this._placeTreeline()
   }

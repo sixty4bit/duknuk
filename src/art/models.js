@@ -35,6 +35,18 @@ const P = {
   leafLight: 0x74c94b,
   trunk: 0x8a5a2e,
   suit: 0x4a6fb0,
+  // Small-prop palette. Every one of these is a saturated note the eye can
+  // land on between the barn red and the grass green — a prop in a cartoon is
+  // there to be SEEN, so nothing here is desaturated "realistic" farm grey.
+  burlap: 0xd9b478,
+  denim: 0x3f6fb5,
+  denimPale: 0x86b0dd,
+  crow: 0x2a2233,
+  rubber: 0x332e2f,
+  metal: 0xd6e0e6,
+  metalDark: 0x9fb2bd,
+  rope: 0xdcb877,
+  grain: 0xf2c53d,
 }
 
 // ---------------------------------------------------------------- primitives
@@ -897,4 +909,453 @@ function buildSalesman() {
 /** Traveling-salesman NPC placeholder, ~1.8 tall. Unused in phase 1. */
 export function makeSalesman() {
   return withSteps(STEPS.CHARACTER, buildSalesman)
+}
+
+// -------------------------------------------------------------- small props
+//
+// A farm reads as INHABITED when the eye finds six small incidents on its way
+// to the barn: a shirt on a line, a hen with her head in the dirt, a barrow
+// somebody left tipped over. That is what these are for — none of them is a
+// game object, all of them are evidence that somebody works here.
+//
+// Every builder below returns a Group standing on the ground at its own
+// origin, facing +Z, inked at PROP weight so the whole set sits one step
+// behind the hen and the buildings in the line hierarchy.
+
+const UP = new THREE.Vector3(0, 1, 0)
+const v3 = (x, y, z) => new THREE.Vector3(x, y, z)
+
+/** Cylinder spanning two points — every rope link, stay and frame joint. */
+function strut(a, b, r, color, seg = 6) {
+  const dir = new THREE.Vector3().subVectors(b, a)
+  const len = Math.max(dir.length(), 1e-4)
+  const m = tube(r, r, len, color, seg)
+  m.quaternion.setFromUnitVectors(UP, dir.divideScalar(len))
+  return at(m, (a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2)
+}
+
+/** Point at `t` along a line that HANGS. A taut wire is an engineering
+ *  drawing; the sag is the entire reason a clothesline reads as cloth. */
+const ropePoint = (a, b, sag, t) =>
+  new THREE.Vector3().lerpVectors(a, b, t).addScaledVector(UP, -Math.sin(Math.PI * t) * sag)
+
+/** Sagging line as a chain of chunky links, so the ink hull traces a curve. */
+function sagRope(a, b, sag, r, color, links = 9) {
+  const g = new THREE.Group()
+  let prev = a
+  for (let i = 1; i <= links; i++) {
+    const next = ropePoint(a, b, sag, i / links)
+    g.add(strut(prev, next, r, color))
+    prev = next
+  }
+  return g
+}
+
+/** Decals fight the terrain for the same depth; bias them toward the camera. */
+const DECAL_BIAS = { polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }
+
+/** Closed wobbly polygon: a spill somebody made, not a circle somebody drew. */
+function blobShape(rnd, r, points = 9, squash = 0.72) {
+  const s = new THREE.Shape()
+  for (let i = 0; i < points; i++) {
+    const a = (i / points) * Math.PI * 2
+    const k = r * (0.6 + rnd() * 0.55)
+    const [x, y] = [Math.cos(a) * k, Math.sin(a) * k * squash]
+    if (i === 0) s.moveTo(x, y)
+    else s.lineTo(x, y)
+  }
+  s.closePath()
+  return s
+}
+
+/** Flat shape lying on the grass, inked along its BOUNDARY (addOutline's
+ *  `flat`) rather than its face normals — a spill in a cartoon is a drawn
+ *  shape with an edge, not a texture stain. */
+function groundDecal(shape, color, y = 0.02) {
+  const g = new THREE.Group()
+  const m = meshOf(new THREE.ShapeGeometry(shape, 10), color, DECAL_BIAS)
+  m.castShadow = false
+  g.add(at(rot(m, -Math.PI / 2, 0, 0), 0, y, 0))
+  return addOutline(g, { pixels: INK_WEIGHT.DECAL, flat: true })
+}
+
+// --------------------------------------------------------------------- bird
+
+/**
+ * Fat round songbird, feet at the origin, drawn as one ball with a smaller
+ * ball on it — anything more anatomical vanishes at this size. `r` is the body
+ * radius: 0.15 is a sparrow on a fencepost, 0.19 the crow that has taken the
+ * scarecrow's hat and is not remotely frightened of it.
+ */
+function songbird(color, r = 0.15, accent = color) {
+  const b = new THREE.Group()
+  b.add(at(scl(ball(r, color, 14), 1, 0.94, 1.18), 0, r * 1.0, 0))
+  b.add(at(ball(r * 0.72, color, 12), 0, r * 1.82, r * 0.46))
+  b.add(at(rot(spike(r * 0.3, r * 0.72, P.beak, 8), Math.PI / 2), 0, r * 1.74, r * 1.05))
+  for (const s of [-1, 1]) {
+    b.add(detail(at(ball(r * 0.17, INK, 8), r * 0.33 * s, r * 2.02, r * 0.86)))
+    b.add(at(scl(ball(r * 0.62, accent, 10), 0.3, 0.86, 1.12), r * 0.84 * s, r * 1.02, -r * 0.06))
+    b.add(detail(at(tube(r * 0.11, r * 0.11, r * 0.5, P.beak, 6), r * 0.3 * s, r * 0.26, r * 0.12)))
+  }
+  b.add(at(rot(scl(spike(r * 0.52, r * 1.5, accent, 8), 1, 1, 0.32), -1.95, 0, 0), 0, r * 1.12, -r * 1.2))
+  return b
+}
+
+/** Plumage pairs (body, wing/tail accent). Saturated: a bird is a full stop. */
+const BIRD_PLUMAGE = [
+  [0xe2542f, 0xa8331a],
+  [P.denim, 0x27508f],
+  [P.grain, 0xc08e15],
+  [0x6f4bb0, 0x4a2f80],
+]
+
+function buildBirdOnPost(seed) {
+  const rnd = seeded(seed)
+  const g = new THREE.Group()
+  const h = 0.95 + rnd() * 0.35
+  g.add(at(rot(box(0.16, h, 0.16, P.cream), (rnd() - 0.5) * 0.14, rnd(), (rnd() - 0.5) * 0.16), 0, h / 2 - 0.04, 0))
+  g.add(at(box(0.28, 0.07, 0.28, P.woodDark), 0, h - 0.01, 0))
+  const [body, accent] = BIRD_PLUMAGE[Math.floor(rnd() * BIRD_PLUMAGE.length)]
+  const bird = withSteps(STEPS.CHARACTER, () => songbird(body, 0.15, accent))
+  g.add(at(rot(bird, 0, rnd() * Math.PI * 2, 0), 0, h + 0.02, 0))
+  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+}
+
+/**
+ * Tiny round songbird on a leaning post, ~1.5 tall. Reusable filler: one of
+ * these anywhere the midfield goes quiet buys a whole beat of life.
+ * @param {number} [seed] omit for a fresh plumage/lean per call.
+ */
+export function makeBirdOnPost(seed = nextSeed()) {
+  return withSteps(STEPS.ARCH, () => buildBirdOnPost(seed))
+}
+
+// ---------------------------------------------------------------- scarecrow
+
+/** Straw bursting out of a cuff or a hem. Flattened cones, so a fan has
+ *  WIDTH — a round spike this small is a sliver and disappears at midfield. */
+function strawFan(rnd, count, len, spread, color = P.hayDark) {
+  const fan = new THREE.Group()
+  for (let i = 0; i < count; i++) {
+    const a = (i / count) * Math.PI * 2 + rnd() * 0.6
+    const straw = scl(spike(len * 0.25, len * (0.7 + rnd() * 0.7), color, 6), 1, 1, 0.4)
+    fan.add(rot(straw, spread * Math.cos(a), a, spread * Math.sin(a)))
+  }
+  return fan
+}
+
+/** Burlap sack head: stitched X eyes and a lopsided grin, drawn in flat ink
+ *  so the face still reads once the figure is 30 m out. */
+function scarecrowHead() {
+  const head = new THREE.Group()
+  head.add(scl(ball(0.24, P.burlap, 16), 1, 1.08, 0.94))
+  for (const s of [-1, 1]) {
+    for (const a of [0.75, -0.75]) {
+      head.add(detail(at(rot(box(0.13, 0.032, 0.03, INK), 0, 0, a), 0.1 * s, 0.05, 0.22)))
+    }
+  }
+  const grin = meshOf(new THREE.TorusGeometry(0.09, 0.026, 6, 14, Math.PI), INK)
+  head.add(detail(at(rot(grin, 0, 0, Math.PI), 0, -0.04, 0.21)))
+  head.add(at(tube(0.09, 0.12, 0.11, P.rope, 8), 0, -0.26, 0))
+  return head
+}
+
+/** Floppy straw hat, tipped off true — nothing on a scarecrow is level. */
+function scarecrowHat() {
+  const hat = new THREE.Group()
+  hat.add(tube(0.34, 0.38, 0.05, P.hay, 14))
+  hat.add(at(tube(0.19, 0.22, 0.24, P.hay, 12), 0, 0.14, 0))
+  hat.add(at(tube(0.225, 0.225, 0.06, P.barnRed, 12), 0, 0.05, 0))
+  return rot(hat, 0.14, 0, -0.22)
+}
+
+/** Barrel torso with mismatched patches sewn on: the jacket is the only place
+ *  this figure gets to be colourful, so the patches are full-saturation. */
+function scarecrowJacket() {
+  const j = new THREE.Group()
+  j.add(tube(0.29, 0.35, 0.82, P.barnRed, 12))
+  const patches = [[0.15, 0.2, 0.3, P.denim, 0.4], [-0.17, -0.08, 0.31, P.cream, -0.35], [0.02, -0.3, 0.33, P.hay, 0.85]]
+  for (const [x, y, z, c, a] of patches) j.add(at(rot(box(0.19, 0.19, 0.05, c), 0, 0, a), x, y, z))
+  j.add(at(rot(box(0.17, 0.17, 0.05, P.denimPale), 0, Math.PI / 2, 0.5), -0.31, 0.05, -0.05))
+  return j
+}
+
+function buildScarecrow(seed) {
+  const rnd = seeded(seed)
+  const g = new THREE.Group()
+  g.add(at(box(0.14, 2.05, 0.14, P.woodDark), 0, 1.02, 0))
+  g.add(at(rot(box(1.44, 0.12, 0.12, P.woodDark), 0, 0, 0.06), 0, 1.5, -0.03))
+  g.add(at(scarecrowJacket(), 0, 1.24, 0))
+  for (const s of [-1, 1]) {
+    const sleeve = rot(box(0.48, 0.18, 0.18, s > 0 ? P.denim : P.cream), 0, 0, 0.06 * s)
+    g.add(at(sleeve, 0.47 * s, 1.5 + 0.02 * s, -0.03))
+    g.add(at(strawFan(rnd, 5, 0.32, 0.95), 0.75 * s, 1.52 + 0.04 * s, -0.03))
+  }
+  g.add(at(strawFan(rnd, 6, 0.3, 1.2), 0, 0.86, 0))
+  g.add(at(scarecrowHead(), 0, 1.86, 0.02))
+  g.add(at(scarecrowHat(), 0, 2.06, -0.02))
+  const crow = withSteps(STEPS.CHARACTER, () => songbird(P.crow, 0.19, 0x171320))
+  g.add(at(rot(crow, 0, 2.5 + rnd() * 0.7, 0), 0.29, 2.03, 0.07))
+  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+}
+
+/**
+ * Patched scarecrow on a crossed stake, ~2.3 tall to the hat (2.5 to the
+ * crow), with a crow standing on the brim conspicuously unafraid of him.
+ * @param {number} [seed] omit for fresh straw and crow angle per call.
+ */
+export function makeScarecrow(seed = nextSeed()) {
+  return withSteps(STEPS.ARCH, () => buildScarecrow(seed))
+}
+
+// -------------------------------------------------------------- laundry line
+
+/** Hangs from the collar: the group origin is the point the peg grips. */
+function shirt(color, w = 0.6, h = 0.66) {
+  const s = new THREE.Group()
+  s.add(at(box(w, h, 0.14, color), 0, -h / 2 - 0.06, 0))
+  for (const k of [-1, 1]) {
+    s.add(at(rot(box(0.4, 0.19, 0.13, color), 0, 0, -0.6 * k), (w / 2 + 0.13) * k, -0.22, 0))
+  }
+  s.add(at(box(w * 0.52, 0.1, 0.16, color), 0, -0.03, 0))
+  return s
+}
+
+function overalls(color, w = 0.6, h = 0.8) {
+  const o = new THREE.Group()
+  for (const k of [-1, 1]) {
+    o.add(at(box(0.11, 0.28, 0.11, color), 0.17 * k, -0.14, 0))
+    o.add(at(box(w * 0.42, h * 0.62, 0.16, color), w * 0.27 * k, -h * 0.78, 0))
+  }
+  o.add(at(box(w, h * 0.5, 0.17, color), 0, -h * 0.45, 0))
+  o.add(detail(at(box(0.19, 0.17, 0.04, P.cream), 0, -0.42, 0.1)))
+  return o
+}
+
+/** Leaning pole with a crossbar the rope actually sits on. */
+function laundryPole(h, lean) {
+  const pole = new THREE.Group()
+  pole.add(at(box(0.13, h, 0.13, P.wood), 0, h / 2, 0))
+  pole.add(at(box(0.52, 0.11, 0.11, P.woodDark), 0, h - 0.1, 0))
+  return rot(pole, 0, 0, lean)
+}
+
+const poleTip = (x, h, lean) => v3(x - Math.sin(lean) * (h - 0.1), Math.cos(lean) * (h - 0.1), 0)
+
+/** Blown, not draped: every garment takes its own kick off the wind. */
+function hang(cloth, p, rnd) {
+  const g = at(new THREE.Group(), p.x, p.y - 0.05, p.z)
+  g.rotation.set(-0.12 - rnd() * 0.35, (rnd() - 0.5) * 0.7, (rnd() - 0.5) * 0.5)
+  g.add(cloth, detail(at(box(0.06, 0.15, 0.11, P.woodDark), 0, 0.06, 0)))
+  return g
+}
+
+const LAUNDRY = [
+  { kind: 'shirt', color: P.cream, t: 0.2 },
+  { kind: 'overalls', color: P.denim, t: 0.42 },
+  { kind: 'shirt', color: P.barnRed, t: 0.64 },
+  { kind: 'shirt', color: P.denimPale, t: 0.84 },
+]
+
+function buildLaundryLine(seed) {
+  const rnd = seeded(seed)
+  const g = new THREE.Group()
+  const [hL, hR, span, sag] = [2.05 + rnd() * 0.2, 1.86 + rnd() * 0.2, 2.6, 0.4]
+  const [leanL, leanR] = [0.1, -0.13]
+  g.add(at(laundryPole(hL, leanL), -span, 0, 0), at(laundryPole(hR, leanR), span, 0, 0))
+  const [a, b] = [poleTip(-span, hL, leanL), poleTip(span, hR, leanR)]
+  g.add(sagRope(a, b, sag, 0.035, P.rope))
+  for (const item of LAUNDRY) {
+    const cloth = item.kind === 'shirt' ? shirt(item.color) : overalls(item.color)
+    g.add(hang(cloth, ropePoint(a, b, sag, item.t), rnd))
+  }
+  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+}
+
+/**
+ * Two leaning poles, a rope that sags, and four billowing garments in cream,
+ * red and denim. ~6.2 long along X, ~2.1 tall — the cheapest colour-and-
+ * motion beat on the farm. Blocks like a fence, not like a post.
+ * @param {number} [seed] omit for a fresh wind per call.
+ */
+export function makeLaundryLine(seed = nextSeed()) {
+  return withSteps(STEPS.ARCH, () => buildLaundryLine(seed))
+}
+
+// -------------------------------------------------------------- crate stack
+
+/** Slatted crate, origin at its centre so it can be stacked AND tipped. */
+function crate(s, color = P.wood) {
+  const c = new THREE.Group()
+  c.add(box(s, s, s, color))
+  const band = s * 0.13
+  for (const k of [-1, 1]) {
+    c.add(at(box(s * 1.03, band, band, P.woodDark), 0, s * 0.31 * k, s * 0.5))
+    c.add(at(box(band, band, s * 1.03, P.woodDark), s * 0.5, s * 0.31 * k, 0))
+    c.add(at(box(band, s * 1.03, band, P.woodDark), s * 0.31 * k, 0, s * 0.5))
+  }
+  return c
+}
+
+/** Loose kernels around the spill, flattened so they sit IN the grass. */
+function grainPips(rnd, cx, cz, count = 7) {
+  const pips = new THREE.Group()
+  for (let i = 0; i < count; i++) {
+    const a = rnd() * Math.PI * 2
+    const r = 0.22 + rnd() * 0.45
+    pips.add(at(scl(ball(0.055, P.grain, 6), 1, 0.55, 1), cx + Math.cos(a) * r, 0.04, cz + Math.sin(a) * r * 0.7))
+  }
+  return pips
+}
+
+function buildCrateStack(seed) {
+  const rnd = seeded(seed)
+  const g = new THREE.Group()
+  const s = 0.68
+  g.add(at(rot(crate(s), 0, 0.12, 0), 0, s / 2, 0))
+  g.add(at(rot(crate(s * 0.92), 0, -0.3, 0.05), 0.06, s * 1.46, -0.05))
+  // The tipped one IS the drawing: a stack nobody knocked over is furniture.
+  g.add(at(rot(crate(s * 0.96), 0.12, 0.6, -1.42), -0.92, s * 0.6, 0.32))
+  const [cx, cz] = [-1.42, 0.62]
+  g.add(at(groundDecal(blobShape(rnd, 0.58), P.grain), cx, 0, cz))
+  g.add(grainPips(rnd, cx, cz))
+  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+}
+
+/**
+ * Two stacked crates and a third tipped on its corner, spilling yellow grain
+ * across the dirt as a flat inked decal. ~1.3 tall; the spill runs to about
+ * x -2, so a blocking radius of ~0.8 around the origin is the honest one.
+ * @param {number} [seed] omit for a fresh spill per call.
+ */
+export function makeCrateStack(seed = nextSeed()) {
+  return withSteps(STEPS.ARCH, () => buildCrateStack(seed))
+}
+
+// -------------------------------------------------------------- wheelbarrow
+
+/** Tray, wheel, handles and legs, built upright and level. The tip is applied
+ *  by the caller as one rotation, so the shape stays easy to read while it is
+ *  being authored and only the pose is the gag. */
+function barrowRig() {
+  const rig = new THREE.Group()
+  rig.add(at(box(0.72, 0.44, 0.9, P.barnRed), 0, 0.63, 0.08))
+  rig.add(at(box(0.8, 0.09, 0.98, P.cream), 0, 0.86, 0.08))
+  rig.add(at(rot(tube(0.26, 0.26, 0.14, P.rubber, 14), 0, 0, Math.PI / 2), 0, 0.26, 0.78))
+  rig.add(detail(at(rot(tube(0.09, 0.09, 0.17, P.metalDark, 8), 0, 0, Math.PI / 2), 0, 0.26, 0.78)))
+  for (const s of [-1, 1]) {
+    rig.add(at(rot(box(0.09, 0.09, 1.7, P.wood), -0.1, 0, 0), 0.3 * s, 0.5, -0.32))
+    rig.add(at(box(0.09, 0.44, 0.09, P.wood), 0.3 * s, 0.24, -0.48))
+    rig.add(at(rot(box(0.07, 0.07, 0.62, P.woodDark), 0.6, 0, 0), 0.3 * s, 0.42, 0.5))
+  }
+  return rig
+}
+
+function buildWheelbarrow() {
+  const g = new THREE.Group()
+  // Nobody parks a barrow squarely on its legs; a catalogue photograph is not
+  // a drawing. It has gone over onto one handle, wheel free in the air.
+  g.add(at(rot(barrowRig(), 0.1, 0.35, -1.15), -0.42, 0.28, 0.16))
+  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+}
+
+/** Red barrow tipped over onto one handle, wheel off the dirt. ~2.3 long
+ *  along Z with the handles, ~1.4 across. */
+export function makeWheelbarrow() {
+  return withSteps(STEPS.ARCH, buildWheelbarrow)
+}
+
+// ----------------------------------------------------------------- milk can
+
+/** Classic dairy can in profile: fat shoulders, choked neck, flared lip. */
+const MILK_PROFILE = [
+  [0, 0], [0.3, 0], [0.32, 0.06], [0.32, 0.46], [0.28, 0.6],
+  [0.16, 0.72], [0.16, 0.86], [0.19, 0.9], [0.19, 0.96], [0, 0.96],
+]
+
+function buildMilkCan() {
+  const g = new THREE.Group()
+  const profile = MILK_PROFILE.map(([r, y]) => new THREE.Vector2(r, y))
+  g.add(meshOf(new THREE.LatheGeometry(profile, 18), P.metal))
+  g.add(at(tube(0.33, 0.33, 0.06, P.metalDark, 18), 0, 0.5, 0))
+  g.add(at(tube(0.175, 0.175, 0.1, P.barnRed, 14), 0, 1.0, 0))
+  g.add(detail(at(ball(0.06, P.metalDark, 10), 0, 1.06, 0)))
+  for (const s of [-1, 1]) {
+    const handle = meshOf(new THREE.TorusGeometry(0.09, 0.028, 6, 12, Math.PI), P.metalDark)
+    g.add(at(rot(handle, 0, Math.PI / 2, 0), 0.26 * s, 0.64, 0))
+  }
+  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+}
+
+/** Steel milk can with a red lid, ~1.05 tall. A cool metal note against all
+ *  that warm wood — pairs well stood in twos and threes by a door. */
+export function makeMilkCan() {
+  return withSteps(STEPS.ARCH, buildMilkCan)
+}
+
+// --------------------------------------------------------------- tire swing
+
+function buildTireSwing(height) {
+  const g = new THREE.Group()
+  // The pivot is the bough's knot: everything hangs off it, so rotating it
+  // swings rope and tire together as one pendulum.
+  const pivot = at(new THREE.Object3D(), 0, height, 0)
+  const drop = Math.max(0.5, height - 1.6)
+  pivot.add(strut(v3(0, 0, 0), v3(0, -drop, 0), 0.045, P.rope))
+  pivot.add(at(tube(0.075, 0.06, 0.16, P.woodDark, 8), 0, -drop + 0.06, 0))
+  pivot.add(at(meshOf(new THREE.TorusGeometry(0.42, 0.17, 8, 18), P.rubber), 0, -drop - 0.44, 0))
+  g.add(pivot)
+  g.userData.pivot = pivot
+  g.userData.parts = { pivot }
+  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+}
+
+/**
+ * Rope and tire hanging in the air, ~0.5 above the grass.
+ *
+ * The group origin is the ground under the tire; `userData.pivot` is an
+ * Object3D at the TOP of the rope, `height` up the Y axis. world.js should
+ * place the group so that pivot lands under a bough, and may rotate the pivot
+ * (X/Z) to swing the whole thing — the rope and tire are its children.
+ * @param {number} [height] rope-top height above ground.
+ */
+export function makeTireSwing(height = 3.0) {
+  return withSteps(STEPS.ARCH, () => buildTireSwing(height))
+}
+
+// -------------------------------------------------------------- pecking hen
+
+/**
+ * Deliberately under the protagonist's size, and inked at PROP rather than
+ * HERO: a background hen has to read as flock, and the moment two hens are the
+ * same weight and scale the player loses track of which one is hers.
+ */
+const PECKER_SCALE = 0.78
+
+function buildPeckingHen(seed) {
+  const rnd = seeded(seed)
+  const g = new THREE.Group()
+  const rig = scl(new THREE.Group(), HEN_SCALE * PECKER_SCALE)
+  // Pitched hard forward: head in the dirt, tail thrown up. A standing hen is
+  // a duplicate of the player's; a pecking one is a different drawing.
+  const body = at(rot(new THREE.Group(), 0.62, 0, 0), 0, 0.47, 0)
+  body.add(scl(ball(0.28, P.hen), 1.06, 0.95, 1.25))
+  body.add(at(rot(henHead(), 0.42, 0, 0), 0, 0.1, 0.36))
+  body.add(henWing(-1), henWing(1), at(henTail(), 0, 0.02, -0.26))
+  const [legL, legR] = [henLeg(-1), henLeg(1)]
+  legL.position.z += 0.08
+  legR.position.z -= 0.05
+  rig.add(body, legL, legR)
+  g.add(rot(rig, 0, rnd() * Math.PI * 2, 0))
+  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+}
+
+/**
+ * Static decorative hen, head down mid-peck. Scaled to 0.78 of the player
+ * hen and folded forward, so she stands about two thirds the protagonist's
+ * height (1.36 vs 2.03) and never competes with her for the eye.
+ * @param {number} [seed] omit for a fresh facing per call.
+ */
+export function makePeckingHen(seed = nextSeed()) {
+  return withSteps(STEPS.CHARACTER, () => buildPeckingHen(seed))
 }
