@@ -24,7 +24,9 @@ const P = {
   hayDark: 0xc7902a,
   pig: 0xf4a3b6,
   pigDark: 0xd97e96,
-  hoof: 0x4a3320,
+  // Warm mid-brown, not near-black: dark hooves under a belly read as four
+  // planted boots and stand the animal back up.
+  hoof: 0x6b4a2e,
   leaf: 0x4fa33c,
   leafLight: 0x74c94b,
   trunk: 0x8a5a2e,
@@ -77,11 +79,30 @@ function extruded(shape, depth, color) {
   return meshOf(geo, color)
 }
 
-/** Deterministic wobble so every haystack/tree is identical between reloads. */
+/**
+ * Deterministic wobble: same seed → same prop, every reload. The seed is
+ * avalanche-mixed and the low bits are discarded, so seeds 1, 2, 3 give three
+ * *different* props instead of three near-identical ones (a raw LCG moves by
+ * 4e-4 per unit of seed, which is what made every haystack a twin).
+ */
 function seeded(seed) {
-  let s = seed >>> 0
-  return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296)
+  let s = (Math.imul(seed >>> 0, 2654435761) ^ 0x9e3779b9) >>> 0
+  const next = () => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0
+    return ((s >>> 8) & 0xffffff) / 0x1000000
+  }
+  next()
+  next()
+  return next
 }
+
+// Props built without an explicit seed still have to differ from each other:
+// forty-six identical trees read as one motif stamped in a row.
+let propSerial = 0
+const nextSeed = () => (propSerial = (propSerial + 1) >>> 0)
+
+const clockNow = () =>
+  (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000
 
 // ------------------------------------------------------------------- chicken
 
@@ -174,20 +195,113 @@ export function makeChicken() {
 
 // ----------------------------------------------------------------------- egg
 
-function buildEgg() {
-  const g = new THREE.Group()
-  const h = 0.25
+// The egg is the single payoff of the whole loop, so it gets the heaviest line
+// in the frame and a classic accent: the drawing tells you it happened before
+// the sound does.
+const EGG_H = 0.42
+const EGG_ACCENT_TIME = 0.34
+/** [time, xz, y] keys: squash flat, overshoot tall, settle. */
+const EGG_POP = [[0, 1.4, 0.6], [0.12, 0.85, 1.25], [0.35, 1, 1]]
+
+function eggShell() {
   const profile = []
   for (let i = 0; i <= 16; i++) {
     const t = (i / 16) * Math.PI
-    const r = 0.104 * Math.sin(t) * (1 - 0.22 * Math.cos(t))
-    profile.push(new THREE.Vector2(Math.max(0, r), (h / 2) * (1 - Math.cos(t))))
+    const r = 0.175 * Math.sin(t) * (1 - 0.22 * Math.cos(t))
+    profile.push(new THREE.Vector2(Math.max(0, r), (EGG_H / 2) * (1 - Math.cos(t))))
   }
-  g.add(meshOf(new THREE.LatheGeometry(profile, 18), P.shell))
-  return addOutline(g)
+  return meshOf(new THREE.LatheGeometry(profile, 18), P.shell)
 }
 
-/** Off-white egg, ~0.25 tall, resting on the ground. */
+/** Unlit flat cel accent — never outlined, never shadowed, drawn on top. */
+function accentMesh(geometry, color) {
+  const m = new THREE.Mesh(
+    geometry,
+    new THREE.MeshBasicMaterial({ color, transparent: true, depthWrite: false, side: THREE.DoubleSide })
+  )
+  m.renderOrder = 2
+  return detail(m)
+}
+
+function burstShape(points = 8, outer = 0.5, inner = 0.19) {
+  const s = new THREE.Shape()
+  for (let i = 0; i < points * 2; i++) {
+    const a = (i / (points * 2)) * Math.PI * 2
+    const r = i % 2 ? inner : outer
+    const [x, y] = [Math.cos(a) * r, Math.sin(a) * r]
+    if (i === 0) s.moveTo(x, y)
+    else s.lineTo(x, y)
+  }
+  s.closePath()
+  return s
+}
+
+/** White starburst plus four radiating ink dashes, lying flat on the grass. */
+function eggAccents() {
+  const g = new THREE.Group()
+  const burst = accentMesh(new THREE.ShapeGeometry(burstShape()), 0xfffbe8)
+  g.add(at(rot(burst, -Math.PI / 2, 0, 0), 0, 0.05, 0))
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + 0.5
+    const dash = accentMesh(new THREE.BoxGeometry(0.05, 0.02, 0.22), INK)
+    dash.userData.dir = a
+    g.add(at(rot(dash, 0, a, 0), 0, 0.05, 0))
+  }
+  return g
+}
+
+function eggPopScale(t) {
+  const last = EGG_POP.length - 1
+  if (t >= EGG_POP[last][0]) return [1, 1]
+  let i = 0
+  while (t > EGG_POP[i + 1][0]) i++
+  const [t0, xz0, y0] = EGG_POP[i]
+  const [t1, xz1, y1] = EGG_POP[i + 1]
+  const k = (t - t0) / (t1 - t0)
+  const e = k * k * (3 - 2 * k)
+  return [xz0 + (xz1 - xz0) * e, y0 + (y1 - y0) * e]
+}
+
+function animateAccents(accents, t) {
+  const k = t / EGG_ACCENT_TIME
+  if (k >= 1) {
+    accents.visible = false
+    return
+  }
+  const ease = 1 - (1 - k) ** 2
+  for (const child of accents.children) {
+    child.material.opacity = 1 - ease
+    const dir = child.userData.dir
+    if (dir === undefined) child.scale.setScalar(0.35 + ease * 1.45)
+    else child.position.set(Math.sin(dir) * (0.3 + ease * 0.4), 0.05, Math.cos(dir) * (0.3 + ease * 0.4))
+  }
+}
+
+/** Self-driving: the egg animates itself off the wall clock from the moment it
+ *  is built, so nothing outside models.js has to tick it. */
+function driveEgg(rig, accents, driver) {
+  const born = clockNow()
+  driver.onBeforeRender = () => {
+    const t = clockNow() - born
+    const [xz, y] = eggPopScale(t)
+    rig.scale.set(xz, y, xz)
+    animateAccents(accents, t)
+  }
+}
+
+function buildEgg() {
+  const g = new THREE.Group()
+  const rig = new THREE.Group()
+  const shell = eggShell()
+  rig.add(shell)
+  const accents = eggAccents()
+  g.add(rig, accents)
+  driveEgg(rig, accents, shell)
+  animateAccents(accents, 0)
+  return addOutline(g, { pixels: 3.0 })
+}
+
+/** Off-white egg, ~0.42 tall, popping into existence with an ink starburst. */
 export function makeEgg() {
   return withSteps(STEPS.CHARACTER, buildEgg)
 }
@@ -321,102 +435,238 @@ export function makeFence(length = 6) {
   return withSteps(STEPS.ARCH, () => buildFence(length))
 }
 
-function buildHaystack() {
-  const g = new THREE.Group()
+function hayMound(rnd, h, rad) {
   const profile = []
+  const bulge = 0.08 + rnd() * 0.16
   for (let i = 0; i <= 11; i++) {
     const t = i / 12
-    profile.push(new THREE.Vector2(1.5 * (1 - t) ** 0.62 * (1 + 0.14 * Math.sin(t * Math.PI)), t * 2.4))
+    profile.push(new THREE.Vector2(rad * (1 - t) ** 0.62 * (1 + bulge * Math.sin(t * Math.PI)), t * h))
   }
-  profile.push(new THREE.Vector2(0, 2.52))
-  g.add(meshOf(new THREE.LatheGeometry(profile, 20), P.hay))
-  const rnd = seeded(7)
-  for (let i = 0; i < 7; i++) {
-    const a = (i / 7) * Math.PI * 2 + rnd() * 0.6
-    const y = 0.35 + rnd() * 1.5
-    const r = 1.4 * (1 - y / 2.5) ** 0.62
+  profile.push(new THREE.Vector2(0, h + 0.12))
+  const mound = meshOf(new THREE.LatheGeometry(profile, 20), P.hay)
+  return scl(mound, 1, 1, 0.85 + rnd() * 0.32)
+}
+
+function hayStraws(rnd, h, rad) {
+  const straws = new THREE.Group()
+  const count = 5 + Math.floor(rnd() * 5)
+  for (let i = 0; i < count; i++) {
+    const a = (i / count) * Math.PI * 2 + rnd() * 0.9
+    const y = 0.3 + rnd() * (h * 0.65)
+    const r = rad * 0.93 * (1 - y / (h + 0.2)) ** 0.62
     const swivel = at(rot(new THREE.Group(), 0, a, 0), Math.sin(a) * r, y, Math.cos(a) * r)
-    swivel.add(rot(spike(0.09, 0.62, P.hayDark, 6), 1.05 + rnd() * 0.3, 0, 0))
-    g.add(swivel)
+    swivel.add(rot(spike(0.09, 0.5 + rnd() * 0.3, P.hayDark, 6), 0.95 + rnd() * 0.45, 0, 0))
+    straws.add(swivel)
   }
+  return straws
+}
+
+function buildHaystack(seed) {
+  const rnd = seeded(seed)
+  const g = new THREE.Group()
+  const h = 2.05 + rnd() * 0.85
+  const rad = 1.32 + rnd() * 0.42
+  g.add(hayMound(rnd, h, rad), hayStraws(rnd, h, rad))
   return addOutline(g)
 }
 
-/** Golden hay mound, ~2.5 tall, with straw poking out at silly angles. */
-export function makeHaystack() {
-  return withSteps(STEPS.ARCH, buildHaystack)
+/**
+ * Golden hay mound, ~2.1–2.9 tall, with straw poking out at silly angles.
+ * @param {number} [seed] omit for a fresh variant per call; pass one to pin it.
+ */
+export function makeHaystack(seed = nextSeed()) {
+  return withSteps(STEPS.ARCH, () => buildHaystack(seed))
 }
 
 // ----------------------------------------------------------------------- pig
 
+/** Yaw (radians) that turns the snout and the closed eye toward the default
+ *  tycoon camera. The pose is authored three-quarter; a random yaw throws the
+ *  whole gag away, so world.js should read this instead of rolling dice. */
+const PIG_REST_YAW = -0.4
+
+/** Cheek on the grass: the skull sits low and the snout dips into the dirt. */
 function pigHead() {
   const head = new THREE.Group()
-  head.add(at(ball(0.33, P.pig), 0.58, 0.4, 0.04))
-  head.add(at(rot(tube(0.19, 0.21, 0.2, P.pigDark, 14), 0, 0, Math.PI / 2), 0.96, 0.33, 0.12))
-  for (const s of [-1, 1]) head.add(detail(at(ball(0.035, INK, 8), 1.06, 0.33, 0.12 + 0.07 * s)))
+  head.add(at(ball(0.33, P.pig), 0.58, 0.33, 0.06))
+  head.add(at(rot(tube(0.19, 0.21, 0.2, P.pigDark, 14), 0, 0, Math.PI / 2), 0.95, 0.24, 0.14))
+  for (const s of [-1, 1]) head.add(detail(at(ball(0.035, INK, 8), 1.05, 0.24, 0.14 + 0.07 * s)))
   for (const s of [-1, 1]) {
     const ear = scl(spike(0.17, 0.3, P.pigDark, 8), 1, 1, 0.45)
-    head.add(at(rot(ear, 0.55, 0, -0.75), 0.46, 0.6, 0.02 + 0.2 * s))
+    head.add(at(rot(ear, 0.75, 0, -0.9), 0.44, 0.52, 0.04 + 0.2 * s))
   }
-  // Closed eye rides high on the skull so it stays readable from the tycoon
-  // camera whatever yaw the world drops the pig in at.
-  const lid = meshOf(new THREE.TorusGeometry(0.1, 0.03, 6, 16, Math.PI), INK)
-  head.add(detail(at(rot(lid, -0.93, 0.36, 0), 0.7, 0.66, 0.23)))
+  // Closed eye rides high on the skull so it clears the snout from the steep
+  // tycoon camera. It is the whole joke, so it gets the best real estate.
+  const lid = meshOf(new THREE.TorusGeometry(0.11, 0.032, 6, 16, Math.PI), INK)
+  head.add(detail(at(rot(lid, -0.93, 0.36, 0), 0.68, 0.57, 0.25)))
   return head
 }
 
-/** Four stubby legs poking out of the belly: two on the ground, two flopped on top. */
+function pigLeg(len) {
+  const leg = new THREE.Group()
+  leg.add(at(rot(tube(0.11, 0.13, len, P.pig, 10), Math.PI / 2, 0, 0), 0, 0, len / 2))
+  leg.add(at(rot(tube(0.14, 0.12, 0.13, P.hoof, 8), Math.PI / 2, 0, 0), 0, 0, len + 0.06))
+  return leg
+}
+
+/**
+ * A lying animal is read from its legs: the down-side pair is buried under the
+ * belly with only the hooves peeking out, and the up-side pair is thrown at the
+ * sky showing pale undersides against air. Four legs at the same height under
+ * the body is a standing pose no matter how flat you squash the torso.
+ */
 function pigLegs() {
   const legs = new THREE.Group()
-  for (const x of [0.36, -0.34]) {
-    for (const [y, splay] of [[0.13, 0.16], [0.46, -0.14]]) {
-      const hip = at(rot(new THREE.Group(), 0, splay * Math.sign(x), 0), x, y, 0.42)
-      hip.add(at(rot(tube(0.11, 0.13, 0.52, P.pig, 10), Math.PI / 2, 0, 0), 0, 0, 0.26))
-      hip.add(at(rot(tube(0.14, 0.12, 0.13, P.hoof, 8), Math.PI / 2, 0, 0), 0, 0, 0.57))
-      legs.add(hip)
-    }
+  for (const x of [0.34, -0.32]) {
+    const s = Math.sign(x)
+    legs.add(at(rot(pigLeg(0.3), 0.2, 0.18 * s, 0), x, 0.17, 0.28))
+    legs.add(at(rot(pigLeg(0.5), -0.6, -0.3 * s, 0), x * 0.74, 0.62, 0.26))
   }
   return legs
 }
 
+/** Belly mass pooled on the grass, plus the flattened contact ellipse that
+ *  says "resting on" rather than "hovering above". */
+function pigBody() {
+  const body = new THREE.Group()
+  body.add(at(scl(ball(0.48, P.pig), 1.34, 0.6, 1.05), 0, 0.3, 0))
+  body.add(at(scl(ball(0.42, P.pig), 1.18, 0.62, 0.9), -0.04, 0.32, 0.28))
+  return body
+}
+
+function pigContact() {
+  return at(scl(ball(0.5, P.pigDark, 18), 1.52, 0.05, 1.18), 0, 0.04, 0.06)
+}
+
+/** Sleeping only reads if it moves: a slow swell on the torso, driven off the
+ *  wall clock from inside the model so no other module has to tick it. */
+function driveBreath(body, driver) {
+  const phase = Math.random() * Math.PI * 2
+  driver.onBeforeRender = () => {
+    const s = Math.sin(clockNow() * 1.35 + phase)
+    body.scale.set(1 + s * 0.02, 1 + s * 0.055, 1 + s * 0.02)
+  }
+}
+
 function buildPig() {
   const g = new THREE.Group()
-  g.add(at(scl(ball(0.48, P.pig), 1.3, 0.8, 1.0), 0, 0.38, 0))
-  g.add(at(scl(ball(0.42, P.pig), 1.15, 0.85, 0.85), -0.04, 0.4, 0.3))
-  g.add(pigHead(), pigLegs())
+  const body = pigBody()
+  g.add(pigContact(), body, pigHead(), pigLegs())
   const tail = meshOf(new THREE.TorusGeometry(0.11, 0.035, 6, 14), P.pigDark)
-  g.add(at(rot(tail, 0, 0.5, 0), -0.64, 0.44, -0.06))
+  g.add(at(rot(tail, 0, 0.5, 0), -0.62, 0.33, -0.04))
+  driveBreath(body, body.children[0])
+  g.userData.parts = { body }
+  g.userData.restYaw = PIG_REST_YAW
   return addOutline(g)
 }
 
-/** Pink pig flopped on its side, big round belly, fast asleep. ~1.9 long. */
+/** Pink pig flopped on its side, big round belly, fast asleep. ~1.9 long.
+ *  `userData.restYaw` is the yaw that faces the gag at the camera. */
 export function makePig() {
   return withSteps(STEPS.CHARACTER, buildPig)
 }
 
 // ---------------------------------------------------------------------- tree
 
-function buildTree() {
-  const g = new THREE.Group()
-  g.add(at(rot(tube(0.26, 0.46, 1.9, P.trunk, 10), 0, 0, 0.04), 0, 0.94, 0))
-  g.add(at(rot(tube(0.13, 0.17, 0.9, P.trunk, 8), 0, 0.4, 0.85), -0.4, 2.05, 0.1))
-  const canopy = at(new THREE.Group(), 0, 2.85, 0)
-  const blobs = [
-    [0, 0.55, 0, 1.3, P.leafLight],
-    [-1.0, -0.05, 0.2, 0.95, P.leaf],
-    [0.98, 0.08, -0.22, 1.0, P.leaf],
-    [0.18, -0.22, 0.92, 0.86, P.leafLight],
-    [-0.3, 0.32, -0.92, 0.9, P.leaf],
-    [0.55, 0.88, 0.38, 0.78, P.leafLight],
+// A treeline is one continuous ragged silhouette, not a row of copies of one
+// object. Mass, gesture and hue all move per instance; three hand-authored
+// silhouettes keep the variation structural instead of just noisy.
+const TREE_KINDS = ['blob', 'blob', 'blob', 'conifer', 'shrub']
+
+/** Matched leaf/highlight pair, hue-rotated ±10° so the mass has internal life. */
+function leafPair(rnd) {
+  const hue = (rnd() - 0.5) * (20 / 360)
+  const lightness = (rnd() - 0.5) * 0.06
+  return [
+    new THREE.Color(P.leaf).offsetHSL(hue, 0, lightness),
+    new THREE.Color(P.leafLight).offsetHSL(hue, 0, lightness),
   ]
-  for (const [x, y, z, r, c] of blobs) canopy.add(at(ball(r, c, 18), x, y, z))
-  g.add(canopy)
+}
+
+function treeTrunk(rnd, h) {
+  const trunk = new THREE.Group()
+  const r = 0.2 + rnd() * 0.12
+  trunk.add(at(rot(tube(r, r * 1.75, h, P.trunk, 10), 0, 0, 0.04), 0, h / 2, 0))
+  if (rnd() > 0.45) {
+    const branch = rot(tube(0.12, 0.16, 0.85, P.trunk, 8), 0, rnd() * Math.PI * 2, 0.85)
+    trunk.add(at(branch, -0.38, h * 0.92, 0.1))
+  }
+  return trunk
+}
+
+/** Broccoli mass: 4–8 balls scattered on a ring, so gaps bite the silhouette. */
+function blobCanopy(rnd, [leaf, light], aspect) {
+  const canopy = new THREE.Group()
+  const count = 4 + Math.floor(rnd() * 5)
+  canopy.add(at(ball(1.05 + rnd() * 0.35, light, 18), 0, 0.4, 0))
+  for (let i = 0; i < count; i++) {
+    const a = (i / count) * Math.PI * 2 + rnd() * 0.9
+    const spread = 0.8 + rnd() * 0.45
+    const r = 0.7 + rnd() * 0.5
+    const c = rnd() > 0.5 ? leaf : light
+    canopy.add(at(ball(r, c, 16), Math.cos(a) * spread, (rnd() - 0.45) * 0.95, Math.sin(a) * spread))
+  }
+  return scl(canopy, aspect, 1 / Math.sqrt(aspect), aspect)
+}
+
+/** Tall narrow conifer: stacked cones, the vertical accent in a treeline. */
+function coniferCanopy(rnd, [leaf, light]) {
+  const canopy = new THREE.Group()
+  const tiers = 4 + Math.floor(rnd() * 2)
+  let y = 0
+  for (let i = 0; i < tiers; i++) {
+    const t = i / tiers
+    const h = 1.6 - t * 0.25
+    canopy.add(at(spike(1.15 * (1 - t * 0.6), h, i % 2 ? leaf : light, 12), 0, y + h / 2, 0))
+    y += h * 0.52
+  }
+  return canopy
+}
+
+/** Low wide shrub mass: squats under the blobs and breaks up the skyline. */
+function shrubCanopy(rnd, [leaf, light]) {
+  const canopy = new THREE.Group()
+  const count = 5 + Math.floor(rnd() * 4)
+  for (let i = 0; i < count; i++) {
+    const a = (i / count) * Math.PI * 2 + rnd() * 0.7
+    const spread = 0.55 + rnd() * 1.0
+    const blob = scl(ball(0.8 + rnd() * 0.5, i % 2 ? leaf : light, 16), 1, 0.72, 1)
+    canopy.add(at(blob, Math.cos(a) * spread, (rnd() - 0.5) * 0.4, Math.sin(a) * spread))
+  }
+  return canopy
+}
+
+function treeCanopy(kind, rnd, tones, trunkH) {
+  // Every canopy mesh must centre above y≈1.8: world.js tints foreground trees
+  // by world height, and a lobe hanging below that line goes untinted.
+  if (kind === 'conifer') return at(coniferCanopy(rnd, tones), 0, trunkH * 0.9 + 0.1, 0)
+  if (kind === 'shrub') return at(shrubCanopy(rnd, tones), 0, trunkH + 1.25, 0)
+  return at(blobCanopy(rnd, tones, 0.75 + rnd() * 0.65), 0, trunkH + 1.05, 0)
+}
+
+const TRUNK_H = { blob: [1.7, 0.7], conifer: [1.15, 0.5], shrub: [0.85, 0.3] }
+
+function buildTree(seed) {
+  const rnd = seeded(seed)
+  const g = new THREE.Group()
+  // Lean pivots at the roots and carries trunk and canopy together — a tree
+  // that leans only in the crown reads as a broken model, not as gesture.
+  const lean = rot(new THREE.Group(), 0, 0, (rnd() - 0.5) * 0.36)
+  const kind = TREE_KINDS[Math.floor(rnd() * TREE_KINDS.length)]
+  const [base, span] = TRUNK_H[kind]
+  const trunkH = base + rnd() * span
+  lean.add(treeTrunk(rnd, trunkH), treeCanopy(kind, rnd, leafPair(rnd), trunkH))
+  g.add(lean)
   return addOutline(g)
 }
 
-/** Broccoli-blob tree, ~5 tall. */
-export function makeTree() {
-  return withSteps(STEPS.ARCH, buildTree)
+/**
+ * Cartoon tree, ~3–5.5 tall: broccoli blob, conifer or shrub, leaning and
+ * hue-shifted per instance.
+ * @param {number} [seed] omit for a fresh variant per call; pass one to pin it.
+ */
+export function makeTree(seed = nextSeed()) {
+  return withSteps(STEPS.ARCH, () => buildTree(seed))
 }
 
 // ------------------------------------------------------------------ salesman

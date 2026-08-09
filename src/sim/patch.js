@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { toonMaterial } from '../art/toon.js'
+import { toonMaterial, addOutline } from '../art/toon.js'
 
 // Tunable: seconds for a fully-bare cell to regrow to fully-lush.
 export const REGROW_SECONDS = 90
@@ -12,26 +12,32 @@ const PIXELS_PER_CELL = 16
 const MAX_CANVAS = 512
 const RENDER_Y = 0.03
 const RING_COLOR = 0x2c4a1e
-const RING_THICKNESS = 0.12
+// World-space height of the (invisible) rim wall used only to give the ink
+// outline real outward-facing normals to expand along — see buildWallGeometry.
+const RING_WALL_HEIGHT = 0.1
 // Gaussian blur radius (in canvas px) applied over the raw cell fill so cell
-// boundaries feather instead of stair-stepping.
-const FEATHER_PX = 1.5
+// boundaries feather instead of stair-stepping. Kept small: at 16 px/cell a
+// heavier blur mushes the grazing gradient into illegibility.
+const FEATHER_PX = 0.8
 
 // Lush must be the darkest, richest note in the frame (grazed-vs-fresh reads
-// backwards otherwise) — deep saturated emerald down to dry umber.
-const LUSH = new THREE.Color('#3f8f2a')
+// backwards otherwise) — deep saturated emerald down to dry umber. Tuned
+// against the *decoded* (sRGB colorSpace) texture output, not raw canvas hex —
+// see the colorSpace assignment in _buildVisuals.
+const LUSH = new THREE.Color('#4f9c33')
 const THIN = new THREE.Color('#d8b23a')
-const BARE = new THREE.Color('#7a5433')
+const BARE = new THREE.Color('#8a5a2b')
 
 function foodColor(t, target = new THREE.Color()) {
   if (t >= 0.5) return target.copy(THIN).lerp(LUSH, (t - 0.5) * 2)
   return target.copy(BARE).lerp(THIN, t * 2)
 }
 
-// A stable (non-random) wobble so the ring reads as hand-drawn but never
-// re-jitters between rebuilds. Returns a flat ribbon (triangle strip) instead
-// of a single-pixel line so it can carry real ink weight.
-function buildRingGeometry(radius, thickness, segments = 72) {
+// A stable (non-random) wobble so the boundary reads as hand-drawn but never
+// re-jitters between rebuilds. Both the fill disc and the ink-outline rim
+// wall are built from these exact points, so they can never drift apart —
+// the fill can neither bleed past nor fall short of the line.
+function buildWobbledOutline(radius, segments = 72) {
   const centers = []
   for (let s = 0; s <= segments; s++) {
     const t = (s / segments) * Math.PI * 2
@@ -39,25 +45,48 @@ function buildRingGeometry(radius, thickness, segments = 72) {
     const r = radius * wobble
     centers.push([Math.cos(t) * r, Math.sin(t) * r])
   }
-  const half = thickness / 2
-  const positions = []
-  for (let s = 0; s <= segments; s++) {
-    const [cx, cz] = centers[s]
-    const [px, pz] = centers[(s - 1 + segments) % segments]
-    const [nx, nz] = centers[(s + 1) % segments]
-    let tx = nx - px
-    let tz = nz - pz
-    const tl = Math.hypot(tx, tz) || 1
-    tx /= tl
-    tz /= tl
-    // outward normal = tangent rotated 90°, in the XZ plane
-    const ox = -tz
-    const oz = tx
-    positions.push(cx + ox * half, 0, cz + oz * half)
-    positions.push(cx - ox * half, 0, cz - oz * half)
+  return centers
+}
+
+// Flat triangle fan across the wobbled boundary, built directly in the
+// group's local XZ plane (no object rotation trick). UVs mirror
+// THREE.CircleGeometry's own mapping (normalized by the nominal, un-wobbled
+// diameter) so the canvas texture lands the same way it did before.
+function buildDiscGeometry(radius, centers) {
+  const positions = [0, 0, 0]
+  const uvs = [0.5, 0.5]
+  for (const [cx, cz] of centers) {
+    positions.push(cx, 0, cz)
+    uvs.push(cx / (radius * 2) + 0.5, cz / (radius * 2) + 0.5)
+  }
+  const segments = centers.length - 1
+  const index = []
+  for (let s = 0; s < segments; s++) {
+    // Wound so computeVertexNormals lands on +Y (up) — center, far, near.
+    index.push(0, s + 2, s + 1)
   }
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+  geo.setIndex(index)
+  geo.computeVertexNormals()
+  return geo
+}
+
+// A thin, invisible standing wall traced exactly along the wobbled boundary.
+// It exists only so addOutline() has real outward-facing rim normals to
+// expand along — a flat disc's normals all point straight up, which gives the
+// ink shader nothing to push radially. The wall itself is never drawn (see
+// the colorWrite:false material in _buildVisuals); only its generated ink
+// shell is, which is what makes the ring hold constant screen-space
+// INK_PIXELS like every other outline in the frame instead of a constant
+// world-space thickness.
+function buildWallGeometry(centers, height) {
+  const positions = []
+  for (const [cx, cz] of centers) {
+    positions.push(cx, 0, cz, cx, height, cz)
+  }
+  const segments = centers.length - 1
   const index = []
   for (let s = 0; s < segments; s++) {
     const a = s * 2
@@ -66,6 +95,8 @@ function buildRingGeometry(radius, thickness, segments = 72) {
     const d = a + 3
     index.push(a, b, c, b, d, c)
   }
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
   geo.setIndex(index)
   geo.computeVertexNormals()
   return geo
@@ -122,10 +153,18 @@ export class Patch {
     this._rawCanvas = raw
     this._rawCtx = raw.getContext('2d')
     this._texture = new THREE.CanvasTexture(canvas)
+    // Canvas bytes are sRGB-encoded (same as the ground texture in
+    // world.js). Without this, three r180's NoColorSpace default treats them
+    // as linear and re-encodes on output, washing out and inverting the
+    // apparent lush/grazed value ramp.
+    this._texture.colorSpace = THREE.SRGBColorSpace
+
+    // Fill and rim share one wobbled boundary so they're guaranteed
+    // coincident — no bleed on the inward arcs, no gap on the outward ones.
+    const outline = buildWobbledOutline(this.radius)
 
     // Same shading path as the ground beneath it (toon-lit, not unlit) so
     // "lush" and "grazed" land the same value/saturation logic as the field.
-    const geo = new THREE.CircleGeometry(this.radius, 48)
     const mat = toonMaterial(0xffffff, {
       steps: 3,
       map: this._texture,
@@ -134,16 +173,18 @@ export class Patch {
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
     })
-    this._discMesh = new THREE.Mesh(geo, mat)
-    this._discMesh.rotation.x = -Math.PI / 2
+    this._discMesh = new THREE.Mesh(buildDiscGeometry(this.radius, outline), mat)
     this._discMesh.renderOrder = 5
     this.group.add(this._discMesh)
 
-    const ringMat = new THREE.MeshBasicMaterial({ color: RING_COLOR, side: THREE.DoubleSide })
-    this._ringMesh = new THREE.Mesh(buildRingGeometry(this.radius, RING_THICKNESS), ringMat)
-    this._ringMesh.position.y = 0.015
-    this._ringMesh.renderOrder = 6
-    this.group.add(this._ringMesh)
+    // Invisible rim wall, ink-shelled via addOutline() so the boundary ring
+    // holds a constant on-screen INK_PIXELS weight like every other outline
+    // in the frame, instead of a constant world-space ribbon thickness.
+    const wallMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false })
+    this._wallMesh = new THREE.Mesh(buildWallGeometry(outline, RING_WALL_HEIGHT), wallMat)
+    this._wallMesh.renderOrder = 6
+    this.group.add(this._wallMesh)
+    addOutline(this._wallMesh, { color: RING_COLOR })
   }
 
   _disposeVisuals() {
@@ -152,10 +193,14 @@ export class Patch {
       this._discMesh.geometry.dispose()
       this._discMesh.material.dispose()
     }
-    if (this._ringMesh) {
-      this.group.remove(this._ringMesh)
-      this._ringMesh.geometry.dispose()
-      this._ringMesh.material.dispose()
+    if (this._wallMesh) {
+      this.group.remove(this._wallMesh)
+      // Includes the addOutline() ink shell child — each shell owns its own
+      // material/geometry (see toon.js), so both must be disposed here.
+      this._wallMesh.traverse((o) => {
+        o.geometry?.dispose()
+        o.material?.dispose()
+      })
     }
     this._texture?.dispose()
   }

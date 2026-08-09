@@ -13,13 +13,19 @@ const STYLE_CSS = `
   position: fixed; inset: 0; pointer-events: none;
   background:
     radial-gradient(ellipse 75% 70% at 50% 46%,
-      rgba(26, 18, 8, 0) 45%,
-      rgba(26, 18, 8, 0.16) 72%,
-      rgba(48, 30, 12, 0.5) 100%),
-    linear-gradient(to bottom,
-      rgba(26, 18, 8, 0.28) 0%, rgba(26, 18, 8, 0) 14%,
-      rgba(26, 18, 8, 0) 82%, rgba(26, 18, 8, 0.3) 100%);
+      rgba(26, 18, 8, 0) 60%,
+      rgba(48, 30, 12, 0.16) 100%);
   mix-blend-mode: multiply;
+}
+.duk-glow {
+  /* warm key-light direction, screen blend so it adds light rather than
+     draining it — pairs with the weak multiply vignette above */
+  position: fixed; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(ellipse 60% 55% at 78% 8%,
+      rgba(255, 226, 168, 0.16) 0%,
+      rgba(255, 226, 168, 0) 60%);
+  mix-blend-mode: screen;
 }
 .duk-panel {
   background: var(--duk-cream);
@@ -50,7 +56,7 @@ const STYLE_CSS = `
 .duk-hint {
   position: fixed; bottom: 30px; left: 50%;
   transform: translateX(-50%) rotate(0.6deg);
-  padding: 10px 22px 10px 46px; font-size: 15px; text-align: center;
+  padding: 10px 22px 10px 34px; font-size: 15px; text-align: center;
   max-width: 70vw;
   animation: duk-pop-in 0.35s ease-out;
 }
@@ -73,7 +79,9 @@ const STYLE_CSS = `
   border-top: 12px solid var(--duk-cream);
 }
 .duk-hint-portrait {
-  position: absolute; top: -12px; left: 10px;
+  /* hangs outside the panel like a badge pinned to the corner, so it never
+     overlaps the hint text */
+  position: absolute; top: -20px; left: -20px;
   width: 34px; height: 34px; border-radius: 50%;
   background: #fff8ea; border: 3px solid var(--duk-ink);
   box-shadow: 2px 2px 0 var(--duk-ink);
@@ -190,6 +198,9 @@ export class HUD {
     const vignette = document.createElement('div')
     vignette.className = 'duk-vignette'
     this.root.appendChild(vignette)
+    const glow = document.createElement('div')
+    glow.className = 'duk-glow'
+    this.root.appendChild(glow)
   }
 
   _buildMoney() {

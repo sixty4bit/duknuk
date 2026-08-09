@@ -29,9 +29,20 @@ function smooth01(x, a, b) {
   return t * t * (3 - 2 * t)
 }
 
+/** Box-Muller: normal-distributed random, mean 0. Used for clump spread so
+ * trees cluster toward a center instead of scattering uniformly. */
+function gaussianRandom(stdDev) {
+  const u = 1 - Math.random()
+  const v = Math.random()
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v) * stdDev
+}
+
 // ---------------------------------------------------------------- ground
 
-/** Blade-scale grass texture: hard-edged hatch marks + clumps, tiled small via repeat. */
+/** Painter's-eye grass texture: a handful of large soft-edged value masses
+ * laid first (the broad shapes a background painter blocks in), then a
+ * sparse pass of hand-drawn clump marks on top for readable detail — not
+ * stipple. Tiled large via repeat so tiles read as painted shapes, not noise. */
 function buildGroundTexture() {
   const px = 256
   const canvas = document.createElement('canvas')
@@ -39,66 +50,85 @@ function buildGroundTexture() {
   const ctx = canvas.getContext('2d')
   ctx.fillStyle = '#7ec852'
   ctx.fillRect(0, 0, px, px)
-  const tones = ['#6cb544', '#8fd867', '#5a9e3a']
   const rnd = seededRand(4242)
+  const massColors = ['rgba(150,205,84,0.55)', 'rgba(88,150,88,0.5)']
+  const massCount = 6 + Math.floor(rnd() * 5) // 6-10 large soft masses
+  for (let i = 0; i < massCount; i++) {
+    const x = rnd() * px
+    const y = rnd() * px
+    const r = 40 + rnd() * 70
+    const grad = ctx.createRadialGradient(x, y, 0, x, y, r)
+    grad.addColorStop(0, massColors[i % massColors.length])
+    grad.addColorStop(1, 'rgba(0,0,0,0)')
+    ctx.fillStyle = grad
+    ctx.beginPath()
+    ctx.arc(x, y, r, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  const tones = ['#6cb544', '#8fd867', '#5a9e3a']
   ctx.lineCap = 'round'
-  for (let i = 0; i < 110; i++) {
+  for (let i = 0; i < 20; i++) {
     const x = rnd() * px
     const y = rnd() * px
     const a = rnd() * Math.PI
-    const len = 6 + rnd() * 9
+    const len = 18 + rnd() * 22
     ctx.strokeStyle = tones[i % tones.length]
-    ctx.lineWidth = 2 + rnd() * 2
+    ctx.lineWidth = 6 + rnd() * 6 // 3x the old blade-scale stroke width
     ctx.beginPath()
     ctx.moveTo(x, y)
-    ctx.quadraticCurveTo(x + Math.cos(a) * len * 0.5, y + Math.sin(a) * len * 0.5 - 3, x + Math.cos(a) * len, y + Math.sin(a) * len)
+    ctx.quadraticCurveTo(x + Math.cos(a) * len * 0.5, y + Math.sin(a) * len * 0.5 - 6, x + Math.cos(a) * len, y + Math.sin(a) * len)
     ctx.stroke()
-  }
-  for (let i = 0; i < 45; i++) {
-    ctx.fillStyle = tones[(i + 1) % tones.length]
-    ctx.beginPath()
-    ctx.arc(rnd() * px, rnd() * px, 3 + rnd() * 3, 0, Math.PI * 2)
-    ctx.fill()
   }
   const tex = new THREE.CanvasTexture(canvas)
   if ('colorSpace' in tex) tex.colorSpace = THREE.SRGBColorSpace
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-  // Plane is 120 world units across; repeat 80x so each tile lands ~1.5
-  // world units (grass scale) instead of the old single 512px stretch
-  // (which put a ~10-unit blob on screen).
-  tex.repeat.set(80, 80)
+  // 120-unit plane, repeat 14x so each tile spans ~8.5 world units — large
+  // painted shapes at readable mid-distance scale instead of carpet-fuzz stipple.
+  tex.repeat.set(14, 14)
   tex.magFilter = THREE.NearestFilter
-  tex.minFilter = THREE.NearestFilter
-  tex.generateMipmaps = false
+  tex.minFilter = THREE.LinearMipmapLinearFilter
+  tex.generateMipmaps = true
+  // Renderer isn't available at this contract's constructor(scene) signature;
+  // any value here is clamped to the GPU's real max by the renderer, so a
+  // generous fixed request is safe without a capabilities query.
+  tex.anisotropy = 8
   return tex
 }
 
-/** Low-frequency brightness variation baked as vertex colors — a second,
- * non-repeating channel of interest separate from the blade texture, and the
- * only source of large-scale value change on an otherwise single-normal plane. */
+/** Low-frequency field variation baked as vertex colors — a hue shift (warm
+ * yellow-green in lit passages, cool blue-green in low passages) rather than
+ * a brightness-only multiplier, so the field gets real value AND temperature
+ * modeling instead of one hue at one value. */
 function applyBroadFieldShading(geo) {
   const pos = geo.attributes.position
   const colors = new Float32Array(pos.count * 3)
+  const warm = new THREE.Color(0xc9dd5a) // yellow-green, lit passages
+  const cool = new THREE.Color(0x5a9a86) // blue-green, low passages
   const c = new THREE.Color()
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i)
     const z = pos.getZ(i)
     const n = Math.sin(x * 0.05 + 1.7) * Math.cos(z * 0.045 - 0.6) * 0.6 + Math.sin(x * 0.017 - z * 0.021) * 0.4
-    const shade = THREE.MathUtils.clamp(0.88 + n * 0.1, 0.78, 1.04)
-    c.setRGB(shade, shade, shade)
-    colors[i * 3] = c.r
-    colors[i * 3 + 1] = c.g
-    colors[i * 3 + 2] = c.b
+    const t = THREE.MathUtils.clamp(0.5 + n * 0.5, 0, 1)
+    c.copy(cool).lerp(warm, t)
+    const value = THREE.MathUtils.clamp(0.7 + t * 0.42, 0.7, 1.12)
+    colors[i * 3] = c.r * value
+    colors[i * 3 + 1] = c.g * value
+    colors[i * 3 + 2] = c.b * value
   }
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
 }
 
 /** Huge flat desaturated backdrop disc under the 120-unit playfield so the
- * field never terminates on a hard edge; fog finishes the job past its rim. */
+ * field never terminates on a hard edge. Radius stays well inside the
+ * sky dome (280u) so the dome's painted horizon — ridge, treeline band,
+ * baked clouds — is never occluded; fog finishes the job past its rim.
+ * Lighter and cooler than the near field on purpose: distance goes
+ * hazier, never darker. */
 function buildFarBackdropGround(size) {
-  const geo = new THREE.CircleGeometry(size * 3.2, 48)
+  const geo = new THREE.CircleGeometry(size * 1.9, 48)
   geo.rotateX(-Math.PI / 2)
-  const mat = toonMaterial(0x6f9a5a, { steps: 2 })
+  const mat = toonMaterial(0x8fae86, { steps: 2 })
   const disc = new THREE.Mesh(geo, mat)
   disc.position.y = -0.04
   disc.receiveShadow = true
@@ -227,6 +257,16 @@ let unitShadowGeo = null
 let sharedShadowMat = null
 let sharedShadowTex = null
 
+// Sun sits at (18, 70, 26) — see _buildLights. Cel shadows fall away from the
+// light and get a slight squash/skew toward that direction so they read as
+// drawn shapes that were placed, not grey blobs stamped straight down.
+const SHADOW_DIR = new THREE.Vector2(-18, -26).normalize()
+const SHADOW_ANGLE = Math.atan2(SHADOW_DIR.x, SHADOW_DIR.y)
+const SHADOW_SQUASH = 1.35
+const SHADOW_OFFSET = 0.4
+
+/** Hard-edged drawn ellipse, not a photographic soft blob: solid fill out to
+ * ~78% of the radius, a short feather, then nothing. Warm brown, not grey. */
 function contactShadowTexture() {
   if (sharedShadowTex) return sharedShadowTex
   const px = 128
@@ -234,18 +274,19 @@ function contactShadowTexture() {
   canvas.width = canvas.height = px
   const ctx = canvas.getContext('2d')
   const g = ctx.createRadialGradient(px / 2, px / 2, 0, px / 2, px / 2, px / 2)
-  g.addColorStop(0, 'rgba(40,26,14,0.42)')
-  g.addColorStop(0.7, 'rgba(40,26,14,0.2)')
-  g.addColorStop(1, 'rgba(40,26,14,0)')
+  g.addColorStop(0, 'rgba(74,44,20,0.34)')
+  g.addColorStop(0.78, 'rgba(74,44,20,0.34)')
+  g.addColorStop(0.84, 'rgba(74,44,20,0)')
+  g.addColorStop(1, 'rgba(74,44,20,0)')
   ctx.fillStyle = g
   ctx.fillRect(0, 0, px, px)
   sharedShadowTex = new THREE.CanvasTexture(canvas)
   return sharedShadowTex
 }
 
-/** One shared unit-circle geometry + material, scaled per-instance — a soft
- * painted contact shadow under every prop instead of relying solely on the
- * (necessarily coarse) shadow map for grounding. */
+/** One shared unit-circle geometry + material, scaled/squashed per-instance —
+ * a hard-edged painted contact shadow under every prop instead of relying
+ * solely on the (necessarily coarse) shadow map for grounding. */
 function buildContactShadow(radius) {
   if (!unitShadowGeo) {
     unitShadowGeo = new THREE.CircleGeometry(1, 24)
@@ -255,19 +296,26 @@ function buildContactShadow(radius) {
     sharedShadowMat = new THREE.MeshBasicMaterial({ map: contactShadowTexture(), transparent: true, depthWrite: false, fog: false })
   }
   const mesh = new THREE.Mesh(unitShadowGeo, sharedShadowMat)
-  mesh.scale.setScalar(radius)
+  mesh.scale.set(radius, 1, radius * SHADOW_SQUASH)
+  mesh.rotation.y = SHADOW_ANGLE
   mesh.renderOrder = 1
   return mesh
 }
 
 // ------------------------------------------------------------------ path
 
-/** Ribbon strip along a Catmull-Rom curve through world-space points. */
+/** Ribbon strip along a Catmull-Rom curve through world-space points. Flat
+ * ground decal: explicit up normals (not computeVertexNormals(), which — combined
+ * with the old winding — produced downward normals and got backface-culled
+ * from the tycoon camera entirely) and a winding order that faces the sky.
+ * No ink hull: a flat decal shouldn't carry an inverted-hull outline. Wins the
+ * depth test against the ground via negative polygon offset instead. */
 function buildPathMesh(points, width) {
   const curve = new THREE.CatmullRomCurve3(points.map((p) => new THREE.Vector3(p.x, 0.02, p.z)))
   const samples = curve.getSpacedPoints(48)
   const verts = []
   const uvs = []
+  const normals = []
   for (let i = 0; i < samples.length; i++) {
     const t = i / (samples.length - 1)
     const tangent = curve.getTangentAt(t)
@@ -276,6 +324,7 @@ function buildPathMesh(points, width) {
     verts.push(p.x + (normal.x * width) / 2, p.y, p.z + (normal.z * width) / 2)
     verts.push(p.x - (normal.x * width) / 2, p.y, p.z - (normal.z * width) / 2)
     uvs.push(0, t, 1, t)
+    normals.push(0, 1, 0, 0, 1, 0)
   }
   const idx = []
   for (let i = 0; i < samples.length - 1; i++) {
@@ -283,16 +332,19 @@ function buildPathMesh(points, width) {
     const b = i * 2 + 1
     const cIdx = i * 2 + 2
     const d = i * 2 + 3
-    idx.push(a, b, cIdx, b, d, cIdx)
+    idx.push(a, cIdx, b, b, cIdx, d)
   }
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3))
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
   geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
   geo.setIndex(idx)
-  geo.computeVertexNormals()
-  const mesh = new THREE.Mesh(geo, toonMaterial(0xb08a55, { steps: 3 }))
+  const mesh = new THREE.Mesh(
+    geo,
+    toonMaterial(0xc09a63, { steps: 3, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
+  )
   mesh.receiveShadow = true
-  return addOutline(mesh, { thickness: 0.04 })
+  return mesh
 }
 
 // ------------------------------------------------------------- scatter props
@@ -365,6 +417,22 @@ function buildWheelbarrow() {
   return addOutline(g, { thickness: 0.015 })
 }
 
+const TREE_BASE_HUES = [0x4fa33c, 0x74c94b, 0x3f8f34]
+
+/** Per-instance canopy color: +/-12deg hue jitter off a base green, with
+ * distance (farT 0..1) pushing further toward cool/desaturated/light so far
+ * clumps read as haze rather than holding full contrast to the frame edge. */
+function jitterCanopyColor(baseHex, hueDeg, farT) {
+  const c = new THREE.Color(baseHex)
+  const hsl = { h: 0, s: 0, l: 0 }
+  c.getHSL(hsl)
+  hsl.h = (hsl.h + hueDeg / 360 + 0.03 * farT + 1) % 1
+  hsl.s = THREE.MathUtils.clamp(hsl.s * (1 - farT * 0.35), 0, 1)
+  hsl.l = THREE.MathUtils.clamp(hsl.l + farT * 0.16, 0, 1)
+  c.setHSL(hsl.h, hsl.s, hsl.l)
+  return c.getHex()
+}
+
 /** Tints canopy meshes (world Y above the trunk) without touching models.js —
  * every ball() in makeTree() gets its own material instance, so this is safe. */
 function tintCanopy(tree, hex) {
@@ -381,8 +449,11 @@ function tintCanopy(tree, hex) {
 // ------------------------------------------------------------- crop patch
 
 /** Tilled bed with furrow stripes under staggered, height-varied plants —
- * reads as agriculture instead of a bare grid of chevrons. */
-function buildCropPatch(seed = 1) {
+ * reads as agriculture instead of a bare grid of chevrons. Yellower green
+ * than the field so crops read as a distinct hue, not more grass; `withFruit`
+ * scatters red-orange fruit notes so one bed reads as a different crop
+ * entirely rather than a re-skin of the others. */
+function buildCropPatch(seed = 1, withFruit = false) {
   const rnd = seededRand(seed)
   const group = new THREE.Group()
   const bedW = 4.2
@@ -398,21 +469,50 @@ function buildCropPatch(seed = 1) {
     furrow.position.set(0, 0.085, r * (bedD / rows) - bedD / 2 + bedD / (rows * 2))
     group.add(furrow)
   }
-  const leafMat = toonMaterial(0x5fa838, { steps: 3 })
+  const leafMat = toonMaterial(0x8fbb3a, { steps: 3 })
+  const fruitMat = toonMaterial(0xe0532a, { steps: 3 })
   for (let r = 0; r < rows; r++) {
     for (let cIdx = 0; cIdx < cols; cIdx++) {
       const h = 0.85 + rnd() * 0.35
       const jitter = (rnd() - 0.5) * 0.18
+      const px = (cIdx * bedW * 0.85) / (cols - 1) - (bedW * 0.85) / 2 + jitter
+      const pz = r * (bedD / rows) - bedD / 2 + bedD / (rows * 2) + jitter
       const leaf = new THREE.Mesh(new THREE.ConeGeometry(0.22, h, 6), leafMat)
-      leaf.position.set(
-        (cIdx * bedW * 0.85) / (cols - 1) - (bedW * 0.85) / 2 + jitter,
-        h / 2 + 0.08,
-        r * (bedD / rows) - bedD / 2 + bedD / (rows * 2) + jitter
-      )
+      leaf.position.set(px, h / 2 + 0.08, pz)
       group.add(leaf)
+      if (withFruit && rnd() > 0.45) {
+        const fruit = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), fruitMat)
+        fruit.position.set(px, h * 0.7 + 0.08, pz)
+        group.add(fruit)
+      }
     }
   }
   return addOutline(group, { thickness: 0.025 })
+}
+
+// -------------------------------------------------------------------- pond
+
+/** Small cool-complement accent — a painted water disc with an ink rim so the
+ * field has a saturated blue note to sit against, not just green everywhere.
+ * The rim is a slightly-larger dark disc peeking out from under the water,
+ * not an inverted-hull outline: a flat circle's vertex normals are all
+ * identical (straight up), so a normal-offset hull just shifts the whole
+ * disc rather than expanding its edge — the same defect the path had. */
+function buildPond(radius) {
+  const g = new THREE.Group()
+  const rim = new THREE.Mesh(new THREE.CircleGeometry(radius * 1.08, 28), toonMaterial(0x1a1208, { steps: 2 }))
+  rim.rotation.x = -Math.PI / 2
+  rim.position.y = 0.025
+  g.add(rim)
+  const water = new THREE.Mesh(new THREE.CircleGeometry(radius, 28), toonMaterial(0x4a9fc9, { steps: 3 }))
+  water.rotation.x = -Math.PI / 2
+  water.position.y = 0.04
+  g.add(water)
+  const highlight = new THREE.Mesh(new THREE.CircleGeometry(radius * 0.5, 22), toonMaterial(0x7ecbe8, { steps: 2 }))
+  highlight.rotation.x = -Math.PI / 2
+  highlight.position.set(radius * 0.18, 0.045, -radius * 0.12)
+  g.add(highlight)
+  return g
 }
 
 // ---------- World ----------
@@ -422,7 +522,11 @@ export class World {
     this.scene = scene
     this.size = SIZE
     this.obstacles = []
-    this.scene.fog = new THREE.Fog(FOG_COLOR, 90, 260)
+    // Near plane pulled in hard (was 90) so the treeline — ring sits past
+    // HALF, ~55-65u out — is actually inside the fog gradient instead of at
+    // zero density; lets the ink dissolve into the horizon instead of holding
+    // full contrast to the frame edge.
+    this.scene.fog = new THREE.Fog(FOG_COLOR, 32, 105)
     this._buildSky()
     this._buildLights()
     this._buildGround()
@@ -471,7 +575,9 @@ export class World {
   _buildLights() {
     // Sun raised toward-overhead so shadows sit tight/short instead of
     // raking long diagonals across open grass.
-    const sun = new THREE.DirectionalLight(0xfff0d0, 2.2)
+    // Warmer key (was 0xfff0d0, nearly white) so lit grass goes yellow-green
+    // and the whole picture reads as one warm-cool separation instead of one hue.
+    const sun = new THREE.DirectionalLight(0xffe4a8, 2.2)
     sun.position.set(18, 70, 26)
     sun.target.position.set(0, 0, 0)
     sun.castShadow = true
@@ -479,7 +585,7 @@ export class World {
     Object.assign(sun.shadow.camera, { left: -reach, right: reach, top: reach, bottom: -reach, near: 1, far: 150 })
     sun.shadow.mapSize.set(2048, 2048)
     sun.shadow.bias = -0.0015
-    sun.shadow.radius = 1.5 // small PCF blur radius for a crisper, inkier edge
+    sun.shadow.radius = 0 // hard map edge — cel shadows are drawn shapes, not photographic blur
     this.scene.add(sun, sun.target)
     // Warm ambient (was cool blue 0xbcd9ff) so shadowed faces keep their hue
     // instead of draining to grey-green, and read brighter (~55-60%).
@@ -511,7 +617,7 @@ export class World {
   _place(mesh, x, z, r, rotY = 0) {
     this._addToScene(mesh, x, z, rotY)
     const shadow = buildContactShadow(r * 1.3)
-    shadow.position.set(x, 0.015, z)
+    shadow.position.set(x + SHADOW_DIR.x * r * SHADOW_OFFSET, 0.015, z + SHADOW_DIR.y * r * SHADOW_OFFSET)
     this.scene.add(shadow)
     this.addObstacle(x, z, r)
     return mesh
@@ -561,6 +667,7 @@ export class World {
     this._placeHaystacks()
     this._placePig()
     this._placeCrops()
+    this._placePond()
     this._placeScatter()
     this._placePath()
     this._placeTrees()
@@ -582,21 +689,42 @@ export class World {
   }
 
   _placeHaystacks() {
+    // Barn-side cluster plus a second, smaller cluster in the left third —
+    // the hay gold was jammed into one corner with the barn red; this
+    // distributes the saturated warm note instead of leaving two thirds of
+    // the frame monochrome green.
     const spots = [
       { x: 18, z: -11, r: 1.3 },
       { x: 21, z: -12.5, r: 1.2 },
       { x: 18, z: -13.5, r: 1.2 },
+      { x: -28, z: -9, r: 1.2 },
+      { x: -25.5, z: -7.3, r: 1.1 },
     ]
     for (const s of spots) this._place(makeHaystack(), s.x, s.z, s.r, Math.random() * Math.PI * 2)
   }
 
   _placePig() {
-    this._place(makePig(), -3, 6, 1.3, Math.random() * Math.PI * 2)
+    const pig = makePig()
+    this._place(pig, -3, 6, 1.3, pig.userData.restYaw ?? -0.4)
   }
 
   _placeCrops() {
-    const spots = [{ x: -15, z: 11, seed: 11 }, { x: -6, z: 17, seed: 22 }, { x: -18, z: 18, seed: 33 }]
-    for (const s of spots) this._addToScene(buildCropPatch(s.seed), s.x, s.z, Math.random() * Math.PI * 2)
+    const spots = [
+      { x: -15, z: 11, seed: 11 },
+      { x: -6, z: 17, seed: 22, fruit: true },
+      { x: -18, z: 18, seed: 33 },
+    ]
+    for (const s of spots) this._addToScene(buildCropPatch(s.seed, !!s.fruit), s.x, s.z, Math.random() * Math.PI * 2)
+  }
+
+  /** Cool complement placed before the rock/flower scatter passes so their
+   * _findScatterSpot obstacle-avoidance keeps clear of it automatically. */
+  _placePond() {
+    const x = -20
+    const z = -3
+    const r = 3.2
+    this._addToScene(buildPond(r), x, z, 0)
+    this.addObstacle(x, z, r)
   }
 
   _placeScatter() {
@@ -668,7 +796,7 @@ export class World {
       { x: 27, z: 38 },
       { x: 32, z: 54 },
     ]
-    const path = buildPathMesh(pts, 3.2)
+    const path = buildPathMesh(pts, 3.8)
     enableShadows(path)
     path.receiveShadow = true
     this.scene.add(path)
@@ -693,18 +821,51 @@ export class World {
     }
   }
 
-  /** Forest ring along the border so the playfield is enclosed instead of
-   * ending at a plane edge; skips spots already occupied by other obstacles. */
+  /** Overlap check that ignores world bounds (the treeline deliberately sits
+   * past HALF, in the fog) and only guards against stacking on obstacles. */
+  _isClearSpot(x, z, margin) {
+    for (const o of this.obstacles) {
+      const dx = x - o.x
+      const dz = z - o.z
+      const rr = o.r + margin
+      if (dx * dx + dz * dz < rr * rr) return false
+    }
+    return true
+  }
+
+  /** One clump: 4-7 trees gaussian-scattered around baseAngle, varied scale
+   * and per-instance canopy hue — never the same silhouette/size/hue twice. */
+  _placeTreeClump(baseAngle, ringR) {
+    const treeCount = 4 + Math.floor(Math.random() * 4)
+    for (let i = 0; i < treeCount; i++) {
+      const angle = baseAngle + gaussianRandom(0.1)
+      const r = ringR + gaussianRandom(6)
+      const x = Math.cos(angle) * r
+      const z = Math.sin(angle) * r
+      const scale = 0.7 + Math.random() * 1.0
+      if (!this._isClearSpot(x, z, 1.1 * scale)) continue
+      const farT = smooth01(r, ringR - 6, ringR + 16)
+      const base = TREE_BASE_HUES[Math.floor(Math.random() * TREE_BASE_HUES.length)]
+      const hueDeg = (Math.random() - 0.5) * 24
+      const tree = tintCanopy(makeTree(), jitterCanopyColor(base, hueDeg, farT))
+      tree.scale.setScalar(scale)
+      this._place(tree, x, z, 1.1 * scale, Math.random() * Math.PI * 2)
+    }
+  }
+
+  /** Forest border as clumps, not an evenly-spaced ring of identical
+   * lollipops: 7-9 clusters (2 of 10 candidate slots left as deliberate gaps
+   * so the eye can see through to the backdrop) pushed past HALF so the
+   * fog knee (near=32) actually reaches them before the frame edge. */
   _placeTreeline() {
-    const ringR = HALF - 3
-    const count = 46
-    for (let i = 0; i < count; i++) {
-      const a = (i / count) * Math.PI * 2
-      const r = ringR + (Math.random() - 0.5) * 5
-      const x = Math.cos(a) * r
-      const z = Math.sin(a) * r
-      if (!this.isWalkable(x, z)) continue
-      this._place(makeTree(), x, z, 1.1, Math.random() * Math.PI * 2)
+    const ringR = HALF + 6
+    const slots = 10
+    const gapSlots = new Set()
+    while (gapSlots.size < 2) gapSlots.add(Math.floor(Math.random() * slots))
+    for (let slot = 0; slot < slots; slot++) {
+      if (gapSlots.has(slot)) continue
+      const baseAngle = (slot / slots) * Math.PI * 2 + (Math.random() - 0.5) * 0.3
+      this._placeTreeClump(baseAngle, ringR)
     }
   }
 }
