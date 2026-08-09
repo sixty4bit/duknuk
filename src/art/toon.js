@@ -31,8 +31,15 @@ export const INK_WEIGHT = {
   HERO: 4.5,
   /** Midfield props: fences, hay, livestock, crops. The frame's baseline. */
   PROP: INK_PIXELS,
-  /** Drawn ground shapes — a road in a cartoon is a shape, not a texture. */
-  DECAL: 3.0,
+  /**
+   * Drawn ground shapes — a road in a cartoon is a shape, not a texture.
+   *
+   * Flat coplanar geometry cannot be inked by an inverted hull at all (see
+   * `flat` in addOutline), so this weight used to be declared and never drawn:
+   * the road, the pond and the patch all dissolved into the grass on a soft
+   * colour blend. It is a real drawn boundary line now.
+   */
+  DECAL: 3.2,
   /** Treeline and horizon landmarks. Fade toward 0 with distance. */
   FAR: 2.0,
 }
@@ -102,6 +109,7 @@ const gradientMaps = new Map()
 // spawned and disposed constantly).
 const hullGeometries = new WeakMap()
 const creaseGeometries = new WeakMap()
+const boundaryGeometries = new WeakMap()
 const inkStyles = new Map()
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v)
@@ -275,7 +283,7 @@ function inkStyle(color, pixels) {
  * frame's ink with it. Only the uniform objects are shared, so a single write
  * to `inkResolution` still re-weights the entire scene.
  */
-function inkMaterial(color, pixels, flat) {
+function inkMaterial(color, pixels) {
   const style = inkStyle(color, pixels)
   const uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog])
   uniforms.uResolution = inkResolution
@@ -285,8 +293,7 @@ function inkMaterial(color, pixels, flat) {
     uniforms,
     vertexShader: INK_VERT,
     fragmentShader: INK_FRAG,
-    // A flat decal has no back: BackSide would cull its shell entirely.
-    side: flat ? THREE.DoubleSide : THREE.BackSide,
+    side: THREE.BackSide,
     fog: true,
     polygonOffset: true,
     polygonOffsetFactor: 1,
@@ -320,37 +327,45 @@ function interiorMaterial(color, pixels) {
   })
 }
 
+/**
+ * Ground-shape ink. Same constant-pixel line as the interior pass, but it has
+ * to beat the decal it rims AND the terrain under that, both of which already
+ * carry their own negative offset — hence the deeper bias — and it is the
+ * outermost thing on the ground, so it draws last.
+ */
+function decalMaterial(color, pixels) {
+  const mat = interiorMaterial(color, pixels)
+  mat.polygonOffsetFactor = -12
+  mat.polygonOffsetUnits = -12
+  return mat
+}
+
 // ------------------------------------------------------------- interior lines
 
 /** [which endpoint, which side] for the two triangles of one line quad. */
 const QUAD = [[0, -1], [1, -1], [1, 1], [0, -1], [1, 1], [0, 1]]
 
 /**
- * Crease edges of `source` as a quad strip: each vertex carries the segment's
- * OTHER endpoint plus a side sign, which is everything the vertex shader needs
- * to lay a constant-pixel-width line down the edge.
- * @returns {THREE.BufferGeometry|null} null when the mesh has no form breaks.
+ * Line segments as a quad strip: each vertex carries the segment's OTHER
+ * endpoint plus a side sign, which is everything the vertex shader needs to
+ * lay a constant-pixel-width line down the edge.
+ * @param {Array<[THREE.Vector3, THREE.Vector3]>} segments
+ * @returns {THREE.BufferGeometry|null} null when there is nothing to draw.
  */
-function buildCreases(source, thresholdAngle) {
-  const edges = new THREE.EdgesGeometry(source, thresholdAngle)
-  const line = edges.attributes.position
-  const count = line.count >> 1
-  if (!count || count > INTERIOR_MAX_EDGES) return (edges.dispose(), null)
+function quadStrip(segments) {
+  const count = segments.length
+  if (!count || count > INTERIOR_MAX_EDGES) return null
   const position = new Float32Array(count * 18)
   const other = new Float32Array(count * 18)
   const side = new Float32Array(count * 6)
-  const ends = [new THREE.Vector3(), new THREE.Vector3()]
-  for (let e = 0; e < count; e++) {
-    ends[0].fromBufferAttribute(line, e * 2)
-    ends[1].fromBufferAttribute(line, e * 2 + 1)
+  segments.forEach((ends, e) => {
     QUAD.forEach(([end, s], k) => {
       const i = (e * 6 + k) * 3
       ends[end].toArray(position, i)
       ends[1 - end].toArray(other, i)
       side[e * 6 + k] = s
     })
-  }
-  edges.dispose()
+  })
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.BufferAttribute(position, 3))
   geo.setAttribute('aOther', new THREE.BufferAttribute(other, 3))
@@ -360,6 +375,24 @@ function buildCreases(source, thresholdAngle) {
   // stops a line popping off at the edge of frame.
   if (geo.boundingSphere) geo.boundingSphere.radius *= 1.08
   return geo
+}
+
+/**
+ * Crease edges of `source` as a line quad strip.
+ * @returns {THREE.BufferGeometry|null} null when the mesh has no form breaks.
+ */
+function buildCreases(source, thresholdAngle) {
+  const edges = new THREE.EdgesGeometry(source, thresholdAngle)
+  const line = edges.attributes.position
+  const segments = []
+  for (let e = 0; e < line.count >> 1; e++) {
+    segments.push([
+      new THREE.Vector3().fromBufferAttribute(line, e * 2),
+      new THREE.Vector3().fromBufferAttribute(line, e * 2 + 1),
+    ])
+  }
+  edges.dispose()
+  return quadStrip(segments)
 }
 
 function creasesFor(geometry, thresholdAngle) {
@@ -443,40 +476,58 @@ function collectEdges(pos, tris, normalOut) {
   return edges
 }
 
-/** Outward in-plane direction at each boundary vertex of a flat mesh. */
-function boundaryDirections(geometry) {
+/**
+ * The open edges of a mesh — every edge with exactly one triangle on it — as a
+ * line quad strip.
+ *
+ * This is what inks a ground shape. The inverted hull cannot do it: a decal's
+ * vertex normals all point at the sky, so the shell inflates straight upward
+ * and the ring it should have drawn never appears, which is why the road, the
+ * pond and the patch all blended softly into the grass while INK_WEIGHT.DECAL
+ * sat declared and unused. A drawn line down the boundary is the thing a pen
+ * would actually do, and it keeps its width in PIXELS like every other line in
+ * the frame rather than in ground units.
+ * @returns {THREE.BufferGeometry|null} null when the mesh is closed.
+ */
+function buildBoundary(geometry) {
   const pos = geometry.attributes.position
-  const plane = new THREE.Vector3()
-  const edges = collectEdges(pos, triangles(geometry), plane)
-  const dirs = new Map()
-  if (plane.lengthSq() < 1e-12) return dirs
-  plane.normalize()
-  const [a, b, c, dir, mid] = [0, 0, 0, 0, 0].map(() => new THREE.Vector3())
+  const edges = collectEdges(pos, triangles(geometry), new THREE.Vector3())
+  const segments = []
   for (const e of edges.values()) {
     if (e.count !== 1) continue
-    a.fromBufferAttribute(pos, e.a)
-    b.fromBufferAttribute(pos, e.b)
-    c.fromBufferAttribute(pos, e.c)
-    dir.subVectors(b, a).cross(plane).normalize()
-    if (dir.dot(c.sub(mid.addVectors(a, b).multiplyScalar(0.5))) > 0) dir.negate()
-    for (const i of [e.a, e.b]) accumulate(dirs, vkey(pos, i), dir.x, dir.y, dir.z)
+    segments.push([
+      new THREE.Vector3().fromBufferAttribute(pos, e.a),
+      new THREE.Vector3().fromBufferAttribute(pos, e.b),
+    ])
   }
-  return dirs
+  return quadStrip(segments)
 }
 
-/**
- * Clone of `geometry` carrying vec4 aInk = (expansion direction, local cap).
- *
- * `flat` swaps welded face normals for outward *boundary* directions. A ground
- * decal's normals all point at the sky, so the usual hull inflates straight up
- * and draws nothing; a road in a cartoon is a drawn shape, and this is what
- * gives it its edge. Interior vertices get a zero direction and don't move.
- */
-function buildHull(geometry, maxLocalWidth, flat) {
+function boundaryFor(geometry) {
+  if (!boundaryGeometries.has(geometry)) boundaryGeometries.set(geometry, buildBoundary(geometry))
+  return boundaryGeometries.get(geometry)
+}
+
+/** The drawn edge of a flat ground shape, as a line ON the boundary itself. */
+function boundaryInkFor(mesh, color, pixels) {
+  const geo = boundaryFor(mesh.geometry)
+  if (!geo) return null
+  const ring = new THREE.Mesh(geo, decalMaterial(color, pixels))
+  ring.name = 'decal-ink'
+  ring.userData.isOutline = true
+  ring.userData.inkColor = color
+  ring.castShadow = false
+  ring.receiveShadow = false
+  ring.renderOrder = 2
+  return ring
+}
+
+/** Clone of `geometry` carrying vec4 aInk = (expansion direction, local cap). */
+function buildHull(geometry, maxLocalWidth) {
   const geo = geometry.clone()
   if (!geo.attributes.normal) geo.computeVertexNormals()
   const pos = geo.attributes.position
-  const dirs = flat ? boundaryDirections(geo) : weldedNormals(geo)
+  const dirs = weldedNormals(geo)
   const ink = new Float32Array(pos.count * 4)
   const n = new THREE.Vector3()
   for (let i = 0; i < pos.count; i++) {
@@ -493,12 +544,12 @@ function buildHull(geometry, maxLocalWidth, flat) {
   return geo
 }
 
-function hullFor(geometry, maxLocalWidth, flat) {
+function hullFor(geometry, maxLocalWidth) {
   let variants = hullGeometries.get(geometry)
   if (!variants) hullGeometries.set(geometry, (variants = new Map()))
-  const key = `${q(maxLocalWidth)}|${flat ? 1 : 0}`
+  const key = q(maxLocalWidth)
   let hull = variants.get(key)
-  if (!hull) variants.set(key, (hull = buildHull(geometry, maxLocalWidth, flat)))
+  if (!hull) variants.set(key, (hull = buildHull(geometry, maxLocalWidth)))
   return hull
 }
 
@@ -508,11 +559,11 @@ function inkWidthCap(object3d) {
   return Number.isFinite(sphere.radius) ? sphere.radius * INK_MAX_FRACTION : 0
 }
 
-function outlineFor(mesh, color, pixels, maxWorldWidth, flat) {
+function outlineFor(mesh, color, pixels, maxWorldWidth) {
   const scale = mesh.getWorldScale(new THREE.Vector3())
   const s = Math.max(Math.abs(scale.x), Math.abs(scale.y), Math.abs(scale.z)) || 1
-  const hull = hullFor(mesh.geometry, maxWorldWidth / s, flat)
-  const shell = new THREE.Mesh(hull, inkMaterial(color, pixels, flat))
+  const hull = hullFor(mesh.geometry, maxWorldWidth / s)
+  const shell = new THREE.Mesh(hull, inkMaterial(color, pixels))
   shell.name = 'outline'
   shell.userData.isOutline = true
   // Kept so setInkWeight() can re-key the shared uniform without a re-walk.
@@ -534,8 +585,9 @@ function outlineFor(mesh, color, pixels, maxWorldWidth, flat) {
  *   interior?: boolean, interiorPixels?: number, interiorAngle?: number}} [opts]
  *   `thickness` is legacy world-space weight and is ignored — ink weight is a
  *   global constant now. `pixels` places the object in the weight hierarchy;
- *   use `INK_WEIGHT`. `flat: true` inks a ground decal (path, patch disc) along
- *   its boundary instead of its face normals — see buildHull.
+ *   use `INK_WEIGHT`. `flat: true` inks a ground decal (road ribbon, pond, spill,
+ *   patch disc) by DRAWING ITS BOUNDARY — see buildBoundary. Use it on any mesh
+ *   that lies in the ground plane; the hull draws nothing on those.
  *
  *   `interior: true` adds the SECOND pen: every form break inside the
  *   silhouette (roof-to-wall, tank-to-leg, door frame to door) gets a crease
@@ -568,10 +620,13 @@ export function addOutline(
   })
   const maxWorldWidth = inkWidthCap(object3d)
   // A flat decal has one plane and no interior: every crease it owns is already
-  // its boundary, which the hull draws.
+  // its boundary, which the ring draws.
   const inkInside = interior && !flat
   for (const mesh of targets) {
-    mesh.add(outlineFor(mesh, color, pixels, maxWorldWidth, flat))
+    const shell = flat
+      ? boundaryInkFor(mesh, color, pixels)
+      : outlineFor(mesh, color, pixels, maxWorldWidth)
+    if (shell) mesh.add(shell)
     if (!inkInside || mesh.userData.noInteriorInk) continue
     const lines = interiorFor(mesh, color, interiorPixels, interiorAngle)
     if (lines) mesh.add(lines)

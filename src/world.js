@@ -142,10 +142,18 @@ function buildGroundTexture() {
   // 1.4u wide, prop-sized (as wide as the chicken, 3x longer) — to grass-mark
   // scale (~0.35u long, 0.09u wide), with count raised to stay dense enough
   // not to read as sparse dots at the new tighter repeat.
+  // Critic defect 3: reserve a small blank corner (no strokes) that
+  // applyGrassDetailFade uses as the sampling target for far-field vertices —
+  // that's what lets grass-stroke density fade to nothing by mid-field
+  // instead of tiling at identical density from the hero's feet to the
+  // horizon.
+  const blankPx = px * 0.035
+  const blankR = px * 0.05
   const strokeCount = 400
   for (let i = 0; i < strokeCount; i++) {
     const x = rnd() * px
     const y = rnd() * px
+    if (Math.hypot(x - blankPx, y - blankPx) < blankR) continue
     const a = rnd() * Math.PI
     const len = (6 + rnd() * 7) * scale
     ctx.strokeStyle = tones[i % tones.length]
@@ -158,9 +166,11 @@ function buildGroundTexture() {
   const tex = new THREE.CanvasTexture(canvas)
   if ('colorSpace' in tex) tex.colorSpace = THREE.SRGBColorSpace
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-  // 120-unit plane, repeat 20x so each tile spans 6 world units of painted
-  // texture — grass scale, not foliage scale (was repeat(4,4) = 30u/tile).
-  tex.repeat.set(20, 20)
+  // repeat stays 1x1 now — applyGrassDetailFade writes final tile-scaled UVs
+  // per vertex directly (grass scale, ~4.5 world units/tile near camera) so
+  // it can also blend far vertices toward the blank corner above; a
+  // texture.repeat multiplier would double-scale on top of that.
+  tex.repeat.set(1, 1)
   // NearestFilter at ~8.5 units/tile was aliasing, not stylization.
   tex.magFilter = THREE.LinearFilter
   tex.minFilter = THREE.LinearMipmapLinearFilter
@@ -221,6 +231,30 @@ function applyBroadFieldShading(geo) {
     colors[i * 3 + 2] = b + (FAR_BAND_WARM.b - b) * farLift
   }
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+}
+
+/** Critic defect 3: the ground texture repeated at identical density and
+ * scale from the hero's feet to the horizon — a uniform stipple that reads as
+ * a texture map, not paint. Fixes it by hand-writing the ground plane's UVs
+ * instead of relying on the flat 0..1 default: near vertices (high +z, close
+ * to the start camera) sample the fully tiled, detailed texture at grass
+ * scale; far vertices (toward -z) LERP their UV toward one fixed coordinate
+ * that buildGroundTexture deliberately leaves blank of strokes. Blending
+ * toward a FIXED target (not just widening the tile) avoids the wrap-seam
+ * artefacts a per-vertex repeat change would cause, and means density/size
+ * genuinely fades to nothing by mid-field rather than just getting coarser. */
+function applyGrassDetailFade(geo) {
+  const pos = geo.attributes.position
+  const uv = geo.attributes.uv
+  const blank = 0.035 // matches buildGroundTexture's reserved blank corner
+  const tile = 4.5 // world units/tile close to camera
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i)
+    const z = pos.getZ(i)
+    const t = smooth01(-z, 6, 42) // 0 near the camera, 1 by mid-field
+    uv.setXY(i, THREE.MathUtils.lerp(x / tile, blank, t), THREE.MathUtils.lerp(z / tile, blank, t))
+  }
+  uv.needsUpdate = true
 }
 
 /** Perturbs a CircleGeometry's rim (all vertices but the center) with a
@@ -302,6 +336,23 @@ function drawCloudShape(ctx, cx, cy, s, { alpha = 0.94, fill = '#fffaf2' } = {})
     ctx.ellipse(cx + dx * s, cy + dy * s * 0.6, r * s * 0.75, r * s * 0.42, 0, 0, Math.PI * 2)
     ctx.fill()
   }
+  // Critic defect 5: warm the underside slightly (lit from above, like every
+  // other cast-shadow/highlight pair in this file) and trace a light ink
+  // edge around each lobe so the mass reads as a drawn scalloped silhouette
+  // instead of an airbrushed smudge.
+  ctx.globalAlpha = alpha * 0.3
+  ctx.fillStyle = '#f6c98a'
+  ctx.beginPath()
+  ctx.ellipse(cx, cy + s * 0.3, s * 0.85, s * 0.2, 0, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.globalAlpha = alpha * 0.5
+  ctx.strokeStyle = 'rgba(120,96,66,0.6)'
+  ctx.lineWidth = Math.max(1, s * 0.03)
+  for (const [dx, dy, r] of puffs) {
+    ctx.beginPath()
+    ctx.ellipse(cx + dx * s, cy + dy * s * 0.6, r * s * 0.75, r * s * 0.42, 0, 0, Math.PI * 2)
+    ctx.stroke()
+  }
   ctx.globalAlpha = 1
 }
 
@@ -345,13 +396,25 @@ function drawPaintedClouds(ctx, w, h) {
     }
   }
   // Far rank first so the near rank can sit visually in front of it.
+  //
+  // Critic defect 5: fill recolored from a cool grey (#d7dbe0 — the "dull
+  // tan-grey smudges ... read as dirt on the lens" next to the good white
+  // cumulus) to the same near-white as the near rank, alpha lifted so the
+  // ink edge and warm underside drawCloudShape now adds still read at this
+  // half scale instead of washing out.
   for (let i = 0; i < 3; i++) {
     const nearScale = 18 + rnd() * 16
-    place(nearScale * 0.5, 0.42, 0.462, { alpha: 0.6, fill: '#d7dbe0' })
+    place(nearScale * 0.5, 0.42, 0.462, { alpha: 0.78, fill: '#f7f1e6' })
   }
   for (let i = 0; i < 4; i++) {
     place(18 + rnd() * 16, 0.462, 0.495)
   }
+  // One more, deliberately left of frame centre — the ranks above are free
+  // to cluster anywhere `place`'s separation check allows, and a sky with
+  // all its incident on one side reads as one dominant puff, not a rhythm.
+  const leftCx = w * (0.06 + rnd() * 0.1)
+  const leftCy = h * (0.465 + rnd() * 0.022)
+  drawCloudShape(ctx, leftCx, leftCy, 20 + rnd() * 8, { alpha: 0.94, fill: '#fffaf2' })
 }
 
 /** Backdrop painted as a theatrical set piece: gradient sky, a warm haze band,
@@ -376,9 +439,16 @@ function buildSkyTexture() {
   for (let y = 0; y < h; y++) {
     const v = y / h
     const worldY = Math.cos(v * Math.PI) // +1 zenith .. 0 horizon .. -1 nadir
-    const t = smooth01(worldY, -0.02, 0.12)
+    // Critic defect 5: the visible sky band (per the START-VIEW camera fit
+    // below) only reaches worldY ~0.12 at its very top — which used to be
+    // exactly where this ramp finished easing and went flat zenith-blue.
+    // The gradient had already ended before the frame's top edge did, which
+    // is what read as "a hard horizontal seam where the top blue band
+    // begins" — three stacked stripes instead of continuous atmosphere.
+    // Widened so it's still easing gently through the whole visible band.
+    const t = smooth01(worldY, -0.03, 0.3)
     c.copy(horizon).lerp(zenith, t)
-    if (worldY > 0.02 && worldY < 0.16) c.lerp(upperHaze, 0.35 * smooth01(worldY, 0.02, 0.09))
+    if (worldY > 0.02 && worldY < 0.34) c.lerp(upperHaze, 0.35 * smooth01(worldY, 0.02, 0.22))
     ctx.fillStyle = `rgb(${(c.r * 255) | 0},${(c.g * 255) | 0},${(c.b * 255) | 0})`
     ctx.fillRect(0, y, w, 1)
   }
@@ -509,51 +579,42 @@ function buildContactShadow(radius) {
   return mesh
 }
 
-let cloudShadowTex = null
-
-/** Lobed cloud-shape silhouette (same five-puff massing as drawCloudShape),
- * filled flat with a light blur — a cloud shadow is a drawn lobed shape with
- * a readable edge, not a bell-curve airbrush. 1024px canvas (was 256px,
- * which stretched to the mass's 55x30 — now 26x16 — world units turned a 2px
- * blur into ~7 screen px of feather, soft enough to erase the lobed contour
- * this comment claimed it had) at a 1px blur. Single flat pass at 0.30 alpha
- * (was a 0.42 core + 0.15 inner-lobe stack) so the shape keeps one hard,
- * legible edge instead of two soft ones. Shared/cached like the
- * contact-shadow texture above. */
-function cloudShadowTexture() {
-  if (cloudShadowTex) return cloudShadowTex
-  const px = 1024
-  const canvas = document.createElement('canvas')
-  canvas.width = canvas.height = px
-  const ctx = canvas.getContext('2d')
-  const s = px * 0.34
-  const puffs = [[0, 0, 1], [0.7, 0.15, 0.65], [-0.7, 0.12, 0.68], [0.25, -0.35, 0.55], [-0.3, -0.3, 0.5]]
-  ctx.filter = 'blur(1px)'
-  ctx.fillStyle = 'rgba(20,46,28,0.30)'
-  for (const [dx, dy, r] of puffs) {
-    ctx.beginPath()
-    ctx.ellipse(px / 2 + dx * s, px / 2 + dy * s * 0.6, r * s * 0.75, r * s * 0.42, 0, 0, Math.PI * 2)
-    ctx.fill()
-  }
-  cloudShadowTex = new THREE.CanvasTexture(canvas)
-  return cloudShadowTex
+/** Critic defect 3: a flat, hard-edged drawn shape (irregular hand-wobbled
+ * polygon) laid on the ground — replaces the soft alpha-blurred decals that
+ * used to do this job (buildCloudShadowMass below, deleted: a blurred
+ * cloud-shape stamp whose actual "causing" cloud floated at (34,36,-14), high
+ * enough it rarely lands in frame, so the mass read as a shadow with no
+ * visible caster — "large soft-edged diagonal shadow smudges" per the
+ * critic). A real mesh's silhouette edge is inherently crisp — no blur, no
+ * alpha gradient — which is what a painted cartoon lawn's value shapes
+ * actually look like. `side: DoubleSide` sidesteps having to hand-verify
+ * winding order for a hand-authored polygon list. */
+function buildFlatGroundShape(points, color, y = 0.018) {
+  const shape = new THREE.Shape(points.map((p) => new THREE.Vector2(p.x, -p.z)))
+  const geo = new THREE.ShapeGeometry(shape, 1)
+  geo.rotateX(-Math.PI / 2)
+  const mat = toonMaterial(color, { steps: 2, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 })
+  mat.side = THREE.DoubleSide
+  const mesh = new THREE.Mesh(geo, mat)
+  mesh.position.y = y
+  mesh.receiveShadow = true
+  return mesh
 }
 
-/** A single large soft dark-green decal across the foreground so the picture
- * has a dark to read the midtone field against — the value structure the
- * near-overhead-sun/flat-midtone composition was missing entirely. No
- * outline: a cloud shadow is a mass of tone, not a drawn silhouette. */
-function buildCloudShadowMass(width, depth) {
-  const geo = new THREE.PlaneGeometry(width, depth)
-  geo.rotateX(-Math.PI / 2)
-  // fog: true (was false) — unfogged over fogged ground was the actual
-  // source of the teal smear between coop and barn: a dark cool decal
-  // composited over ground already pushed warm by scene fog produces a
-  // grey-teal wash unrelated to either color in isolation.
-  const mat = new THREE.MeshBasicMaterial({ map: cloudShadowTexture(), transparent: true, depthWrite: false, fog: true })
-  const mesh = new THREE.Mesh(geo, mat)
-  mesh.renderOrder = 1
-  return mesh
+/** An organic, hand-drawn-looking blob outline for buildFlatGroundShape: a
+ * ring of points at `radius` from center, each nudged by a seeded random
+ * offset and smoothed against its neighbours so the silhouette reads as one
+ * wobbly sweep rather than jagged noise or a perfect circle. */
+function buildWobblyGroundBlob(cx, cz, radius, color, seed, segments = 18) {
+  const rnd = seededRand(seed)
+  const offsets = Array.from({ length: segments }, () => 1 + (rnd() - 0.5) * 0.64)
+  const pts = []
+  for (let i = 0; i < segments; i++) {
+    const a = (i / segments) * Math.PI * 2
+    const rr = radius * (offsets[i] * 0.5 + (offsets[(i + 1) % segments] + offsets[(i - 1 + segments) % segments]) * 0.25)
+    pts.push({ x: cx + Math.cos(a) * rr, z: cz + Math.sin(a) * rr })
+  }
+  return buildFlatGroundShape(pts, color)
 }
 
 /** Critic defect 4: the barn's real-time cast shadow (sun + shadow map, see
@@ -691,6 +752,11 @@ function buildRock(seed) {
   return addOutline(g, { thickness: 0.02 })
 }
 
+/** Critic defect 4: a bare tapered cylinder with a flat tan cap read as one
+ * of the "bare brown wedges standing in the field" the critic flagged next
+ * to the treeline — indistinguishable, at scatter distance, from a tree that
+ * lost its canopy. A cut stump needs the tell that says "sawn," not
+ * "broken": two concentric drawn growth rings on the cap face. */
 function buildStump() {
   const g = new THREE.Group()
   const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.38, 0.5, 10), toonMaterial(0x7d5228, { steps: 3 }))
@@ -699,6 +765,13 @@ function buildStump() {
   const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.04, 10), toonMaterial(0xc99a5c, { steps: 3 }))
   cap.position.y = 0.51
   g.add(cap)
+  const ringMat = toonMaterial(0x9c7440, { steps: 2 })
+  for (const rr of [0.22, 0.12]) {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(rr, 0.012, 5, 16), ringMat)
+    ring.rotation.x = Math.PI / 2
+    ring.position.y = 0.535
+    g.add(ring)
+  }
   return addOutline(g, { thickness: 0.025 })
 }
 
@@ -1139,6 +1212,7 @@ export class World {
     const geo = new THREE.PlaneGeometry(this.size, this.size, segs, segs)
     geo.rotateX(-Math.PI / 2)
     applyBroadFieldShading(geo)
+    applyGrassDetailFade(geo)
     const mat = toonMaterial(0xffffff, { steps: 3, vertexColors: true })
     mat.map = buildGroundTexture()
     mat.needsUpdate = true
@@ -1146,29 +1220,24 @@ export class World {
     ground.receiveShadow = true
     this.scene.add(ground)
     this.scene.add(buildFarBackdropGround())
-    this._placeCloudShadowMass()
+    this._placeGroundValueShapes()
   }
 
-  /** Cloud-shadow decal repositioned so its edge crosses the barn (11,-14)
-   * and the paddock's south fence run (roughly x8-30, z~-9/-11) — a dark mass
-   * needs to fall across a readable object to be legible as cast tone with a
-   * cause; parked over open grass it reads as nothing (or a stain) no matter
-   * how the value is tuned. A real 3D cloud sits along the sun's ray from the
-   * mass so the shadow has a visible source. Shrunk from 55x30 to 26x16 (was
-   * field-wide enough to read as a haze bank rather than one shape crossing
-   * the barn and fence). */
-  _placeCloudShadowMass() {
-    const mass = buildCloudShadowMass(26, 16)
-    mass.position.set(14, 0.03, -8)
-    mass.rotation.y = 0.4
-    this.scene.add(mass)
-    // Offset from the mass in the same direction as SUN_POS - massPos, so the
-    // shadow's implied light source is the sun's actual direction, not an
-    // arbitrary "somewhere up there."
-    const cause = buildCloud()
-    cause.scale.set(2.2, 2.2 * 0.55, 2.2)
-    cause.position.set(34, 36, -14)
-    this.scene.add(cause)
+  /** Critic defect 3: replaces the old blurred cloud-shadow decal (see
+   * buildFlatGroundShape's comment) with two flat, opaque, hard-edged
+   * shapes — "a painted cartoon lawn has two or three flat green values in
+   * deliberate SHAPES ... each with a crisp boundary, not a gradient": a
+   * darker hand-wobbled sweep under the near grove/treeline mass, and a
+   * lighter warm wedge across the open middle ground between the coop and
+   * the barn. */
+  _placeGroundValueShapes() {
+    this.scene.add(buildWobblyGroundBlob(-16, -13, 12, 0x4d7a35, 711))
+    this.scene.add(
+      buildFlatGroundShape(
+        [{ x: -4, z: 8 }, { x: 10, z: 6 }, { x: 14, z: -6 }, { x: 2, z: -10 }, { x: -6, z: -4 }],
+        0xcfe08c
+      )
+    )
   }
 
   _addToScene(mesh, x, z, rotY = 0) {
@@ -1262,6 +1331,7 @@ export class World {
     this._placePath()
     this._placeTrees()
     this._placeLandmarks()
+    this._placeMidDistanceBackdrop()
   }
 
   /** Vertical accents near the horizon band that break up the composition's
@@ -1291,6 +1361,80 @@ export class World {
       const stack = makeHaystack()
       stack.scale.setScalar(2.2)
       this._place(stack, s.x, s.z, 1.3 * 2.2, s.yaw)
+    }
+  }
+
+  /** Critic defect 2: the band between the near lawn and the treeline
+   * (r 72-100) — roughly z -40..-80, the largest single area in the frame —
+   * carried zero drawn geography, just ground texture. buildSilo/
+   * buildWindmill/buildWaterTower (_placeLandmarks, z -34..-54) already give
+   * it one distant-structure beat; this adds the rest of what a golden-age
+   * backdrop paints there: two hedgerow strips at different values, a rail
+   * fence receding toward a vanishing point, and a couple of pale mown-field
+   * rectangles. */
+  _placeMidDistanceBackdrop() {
+    this._placeHedgerows()
+    this._placeConvergingFenceLine()
+    this._placeMownFieldRects()
+  }
+
+  /** Two flat ribbon strips (the same builder the cart track and mown stripe
+   * use), stepped darker-near / lighter-far so the band itself shows a
+   * front-to-back value step, running roughly parallel to the horizon with a
+   * little sine undulation so neither reads as a ruled line. Decals only, no
+   * obstacle — nothing plays out here. */
+  _placeHedgerows() {
+    const hedges = [
+      { z: -46, color: 0x4a6b34, dz: 2.4 },
+      { z: -62, color: 0x6f8a4c, dz: 3.2 },
+    ]
+    for (const h of hedges) {
+      const pts = [-52, -26, 0, 26, 52].map((x, i) => ({ x, z: h.z + Math.sin(i * 1.3) * h.dz }))
+      this.scene.add(buildPathMesh(pts, 1.6, { color: h.color, steps: 2, y: 0.02, ink: INK_WEIGHT.DECAL }))
+    }
+  }
+
+  /** A post-and-rail line built as short straight segments along a diagonal
+   * running away from camera (not parallel to the frame edge) — perspective
+   * alone converges a receding line toward a vanishing point, the way the
+   * near cart track already does at foreground scale. Reuses _placeFenceLine
+   * per segment so it registers real obstacle circles like the paddock does. */
+  _placeConvergingFenceLine() {
+    const from = { x: -48, z: -40 }
+    const to = { x: 0, z: -70 }
+    const segs = 6
+    for (let i = 0; i < segs; i++) {
+      const x0 = THREE.MathUtils.lerp(from.x, to.x, i / segs)
+      const z0 = THREE.MathUtils.lerp(from.z, to.z, i / segs)
+      const x1 = THREE.MathUtils.lerp(from.x, to.x, (i + 1) / segs)
+      const z1 = THREE.MathUtils.lerp(from.z, to.z, (i + 1) / segs)
+      const dx = x1 - x0
+      const dz = z1 - z0
+      const len = Math.hypot(dx, dz)
+      // rotY such that the fence's local +X axis (world dir (cos,-sin) under
+      // _addToScene's rotation.y) lines up with this segment's own direction
+      // — matches the convention _placeFenceLine's obstacle-stepping already
+      // assumes.
+      this._placeFenceLine(len, (x0 + x1) / 2, (z0 + z1) / 2, Math.atan2(-dz, dx))
+    }
+  }
+
+  /** A couple of pale, flat rectangles standing in for distant mown fields —
+   * the lightest value in the mid-band, per "step the values so each band is
+   * lighter than the one in front of it." Decals, no obstacle. */
+  _placeMownFieldRects() {
+    const rects = [
+      { x: -30, z: -52, w: 22, d: 12, rot: 0.3 },
+      { x: 24, z: -60, w: 18, d: 10, rot: -0.2 },
+    ]
+    for (const r of rects) {
+      const geo = new THREE.PlaneGeometry(r.w, r.d)
+      geo.rotateX(-Math.PI / 2)
+      const mat = toonMaterial(0xd8dd9a, { steps: 2, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 })
+      const mesh = new THREE.Mesh(geo, mat)
+      mesh.position.set(r.x, 0.015, r.z)
+      mesh.rotation.y = r.rot
+      this.scene.add(mesh)
     }
   }
 
@@ -1373,15 +1517,17 @@ export class World {
     for (const s of spots) this._place(makeHaystack(), s.x, s.z, s.r, Math.random() * Math.PI * 2)
   }
 
-  /** Critic defect 6: at the old (-3,6) the pig cropped to an anonymous pink
-   * lump at the bottom frame edge, half-behind the HUD hint banner — the
-   * DESIGN.md gag of a pig lying in the path was staged but invisible. Moved
-   * up the road to (-2,1), fully in frame on the near bend (see _placePath,
-   * which now detours through (-2.0,1.6) to keep going around it) and clear
-   * of the hint banner's bottom-left footprint. */
+  /** Critic defect 6 (was -3,6, cropped at the bottom edge) moved the pig to
+   * (-2,1); critic defect 1 (this pass) found even that too close to the coop
+   * door — jammed shoulder-to-shoulder with the hero hen and both pecking
+   * hens in one bottom-edge strip. Pushed further out to (0,-1), astride the
+   * cart track roughly midway between the coop and the barn (the path's own
+   * (1.0,-1.0) control point, see _placePath, sits ~1u from this spot) so it
+   * still reads as the DESIGN.md "pig lying in the path" gag but is no longer
+   * part of the door-yard cluster. */
   _placePig() {
     const pig = makePig()
-    this._place(pig, -2.0, 1.0, 1.3, pig.userData.restYaw ?? -0.4)
+    this._place(pig, 0, -1, 1.3, pig.userData.restYaw ?? -0.4)
   }
 
   _placeCrops() {
@@ -1424,8 +1570,21 @@ export class World {
    * thing happening where it stands. */
   _placeStartViewProps() {
     this._placeCoopYard()
+    this._placeDecorAnimals()
     this._placeBarnYard()
     this._placeFencePerches()
+  }
+
+  /** Critic defect 1: hero hen, both pecking hens and the sleeping pig were
+   * all bunched into one strip along the bottom edge, all at the same
+   * on-screen scale, touching or overlapping — no hero read. Spread in DEPTH
+   * now, not just X: one pecking hen upstage near the pond bank, the other
+   * out by the crop beds, both well clear of the coop door's ~3u empty
+   * radius (see _placeCoopYard) so the hero hen — spawned at the door by
+   * main.js — owns her own negative space. */
+  _placeDecorAnimals() {
+    this._placeDecor(makePeckingHen(), -9, -6, 0.35, 1.4) // pond bank
+    this._placeDecor(makePeckingHen(), 2, -3, 0.35, -2.0) // crop beds
   }
 
   /** Left and centre of frame: the coop's own yard. The scarecrow is the one
@@ -1435,14 +1594,17 @@ export class World {
    * position to read as a figure peeking out from behind a blob. Laundry
    * strings BEHIND the coop (smaller z) so it layers into depth instead of
    * standing beside it, and the tire swing hangs off SWING_TREE at (-9,-11).
-   * Hens get no obstacle: they are the size of the animal that has
-   * to walk past them, and the corridor south of the door is theirs. */
+   *
+   * Critic defect 1 (second pass): the pecking hens used to live right here,
+   * at (-3.6,0.8) and (-7.8,1.2) — a couple of units from the coop door,
+   * bunched with the hero hen and the pig into one bottom-edge strip with no
+   * hero read. Both hens moved out to _placeDecorAnimals, spread in DEPTH
+   * instead of huddled at the door, so a clear ~3u radius around the coop
+   * door (~-5.2,-0.6) is left for the hero hen alone. */
   _placeCoopYard() {
     this._place(makeScarecrow(), -7.6, -3.2, 0.6, 0.45)
     this._placeLaundryLine()
     this._placeTireSwing()
-    this._placeDecor(makePeckingHen(), -3.6, 0.8, 0.35, 2.3)
-    this._placeDecor(makePeckingHen(), -7.8, 1.2, 0.35, -1.1)
   }
 
   /** makeTireSwing takes the height of its rope-top and puts its group origin
@@ -1600,9 +1762,19 @@ export class World {
     }
   }
 
+  /** Critic defect 4: at full-circle random placement, ~42% of these landed
+   * inside the camera-facing arc (195-345deg, same sector _placeTreeline
+   * scores against the default view) — and at r 52-56 they sit CLOSER to
+   * camera than the near treeline rank (72), so a small scatter prop read as
+   * a broken tree at conspicuous scale ("several ... bare brown wedges").
+   * Now sampled only from the arc _placeTreeline's own sparse pass avoids
+   * (345deg -> 360 -> 195deg, wrapping the opposite way) so a stump this
+   * plain never lands in the primary start view — only where a player who
+   * orbits the camera would find it, close enough to read as a cut stump. */
   _placeStumps() {
     for (let i = 0; i < 6; i++) {
-      const a = Math.random() * Math.PI * 2
+      const angleDeg = 345 + Math.random() * 210
+      const a = THREE.MathUtils.degToRad(angleDeg % 360)
       const r = HALF - 8 + Math.random() * 4
       const spot = this._findScatterSpot(Math.cos(a) * r, Math.sin(a) * r, 3)
       if (!spot) continue
@@ -1643,18 +1815,19 @@ export class World {
    * route it behind the left repoussoir wing at (-14,16) — see
    * _placeForegroundFrame — instead of off the bottom-left corner.
    *
-   * It also passes within ~1.2 of the dozing pig, now staged at (-2,1) (see
-   * _placePig / critic defect 6) — half the road's width — so the pig is
-   * literally lying in the path, which is what DESIGN.md asked for and what a
-   * cartoon would draw. The road is a decal and registers no obstacle, so
-   * none of this narrows the walkable corridor. */
+   * It also passes within ~1 unit of the dozing pig, now staged at (0,-1)
+   * (see _placePig / critic defect 1, second pass) — well inside the road's
+   * half-width — so the pig is literally lying in the path, which is what
+   * DESIGN.md asked for and what a cartoon would draw. The road is a decal
+   * and registers no obstacle, so none of this narrows the walkable
+   * corridor. */
   _placePath() {
     const pts = [
       { x: 11.2, z: -10.8 }, // barn doors
       { x: 9.0, z: -8.5 },
       { x: 5.0, z: -5.0 },
-      { x: 1.0, z: -1.0 },
-      { x: -2.0, z: 1.6 }, // over the pig
+      { x: 1.0, z: -1.0 }, // passes the pig, see _placePig
+      { x: -2.0, z: 1.6 },
       { x: -5.5, z: 9.5 },
       { x: -13, z: 10 },
       { x: -19, z: 14 },

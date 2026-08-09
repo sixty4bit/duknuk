@@ -16,6 +16,15 @@ const P = {
   shell: 0xfdf3da,
   barnRed: 0xc8352b,
   barnDark: 0x9b2620,
+  /**
+   * The roof is a DIFFERENT VALUE, not a different hue.
+   *
+   * barnDark sat only 25% under barnRed, which the sun then closed further on
+   * the lit plane: the roof and the wall arrived as one red mass with a seam in
+   * it. This is 45% under — a 1.8:1 step, the separation a painted cel would
+   * give the two biggest planes on the biggest object in the frame.
+   */
+  barnRoof: 0x741c14,
   cream: 0xfff4d6,
   wood: 0xb07a3e,
   woodDark: 0x7d5228,
@@ -47,6 +56,12 @@ const P = {
   metalDark: 0x9fb2bd,
   rope: 0xdcb877,
   grain: 0xf2c53d,
+  // ONE blue for every body of water on the farm. The trough used to be a cyan
+  // 0x5fb8d6 lid next to a 0x4a9fc9 pond, which is two different liquids in one
+  // frame; a cartoon farm has one water colour and one highlight on it.
+  water: 0x4a9fc9,
+  waterLight: 0x8ed3ea,
+  mud: 0x9b7c4a,
 }
 
 // ---------------------------------------------------------------- primitives
@@ -368,7 +383,9 @@ export function makeEgg() {
 function coopRoof() {
   const roof = new THREE.Group()
   for (const s of [-1, 1]) {
-    roof.add(at(rot(box(2.7, 0.14, 1.36, P.barnDark), 0.62 * s, 0, 0), 0, 2.42, 0.47 * s))
+    // Same value step as the barn's roof-vs-wall, so the two red buildings are
+    // painted by the same hand.
+    roof.add(at(rot(box(2.7, 0.14, 1.36, P.barnRoof), 0.62 * s, 0, 0), 0, 2.42, 0.47 * s))
   }
   roof.add(at(box(2.8, 0.14, 0.2, P.cream), 0, 2.82, 0))
   return roof
@@ -426,38 +443,94 @@ function barnWallShape() {
 }
 
 /**
- * Segments per curve on the gambrel arc.
+ * The gambrel, as two straight pitches meeting at a hard crease.
  *
- * ExtrudeGeometry gives every facet a flat normal, so the 2-step toon ramp
- * breaks exactly on facet edges: at 8 segments per curve that break was a
- * visible staircase climbing the roof, and the silhouette was a polygon. The
- * roof spans ~11 m across five curves, so 32 puts a facet every ~7 cm — under
- * the ink weight at any sane camera distance, which turns the staircase back
- * into one clean lit-plane edge. Cheap: it is one extrude, built once.
+ * The roof used to be a smooth arc swept from eave to ridge — five quadratic
+ * curves at 32 segments each. Every one of those facets is under the ink weight,
+ * which is exactly the problem: nothing on it is ever a LINE, so the whole roof
+ * arrived as one continuous half-cylinder shell. A bread loaf. A Quonset hut.
+ * A barn's entire identity is the gambrel, and a gambrel is not a curve — it is
+ * a steep lower pitch and a shallow upper pitch meeting at a break you can see
+ * from across the field.
+ *
+ * The numbers are chosen so the break is DRAWN, not merely present: 64.4 deg
+ * lower against 13.6 deg upper puts 50.8 deg between the two face normals,
+ * clear of toon.js's 46 deg INTERIOR_ANGLE, so the interior-ink pass strokes
+ * the knuckle the length of the barn. Under 46 (which is where a realistically
+ * proportioned gambrel lands) the crease exists in the mesh and no pen ever
+ * finds it.
+ *
+ * `fascia` gives the eave real thickness, and `eaveX` carries the roof 0.5–0.7
+ * past the wall so there is an overhang to cast the dark cel plane onto the
+ * wall head — the shadow line a roof gets for free in a drawing and never gets
+ * from geometry that terminates flush.
  */
-const ROOF_CURVE_SEGMENTS = 32
+const GAMBREL = {
+  eaveX: 5.7,
+  eaveY: 3.95,
+  fascia: 0.3,
+  kneeX: 4.55,
+  kneeY: 6.35,
+  ridgeY: 7.45,
+  depth: 8.7,
+}
+
+/** Underside of the eave. Every board ON the wall has to finish below it, or
+ *  the overhang swallows it and the barn goes back to being flush. */
+const EAVE_UNDER = GAMBREL.eaveY - GAMBREL.fascia
 
 function barnRoofShape() {
+  const { eaveX: ex, eaveY: ey, kneeX: kx, kneeY: ky, ridgeY } = GAMBREL
   const s = new THREE.Shape()
-  s.moveTo(-5.45, 4.02)
-  s.quadraticCurveTo(-4.85, 5.5, -3.7, 6.3)
-  s.quadraticCurveTo(-1.9, 7.25, 0, 7.4)
-  s.quadraticCurveTo(1.9, 7.25, 3.7, 6.3)
-  s.quadraticCurveTo(4.85, 5.5, 5.45, 4.02)
-  s.lineTo(-5.45, 4.02)
+  s.moveTo(-ex, EAVE_UNDER)
+  s.lineTo(-ex, ey)
+  s.lineTo(-kx, ky)
+  s.lineTo(0, ridgeY)
+  s.lineTo(kx, ky)
+  s.lineTo(ex, ey)
+  s.lineTo(ex, EAVE_UNDER)
+  s.closePath()
   return s
+}
+
+/** Cream cap straddling the ridge. The two upper pitches only differ by 27 deg,
+ *  which is under the crease threshold and correctly so — a real ridge is a
+ *  capping board, not an angle, and the board's own box corners carry the line. */
+function barnRidge() {
+  return at(box(0.42, 0.26, GAMBREL.depth + 0.2, P.cream), 0, GAMBREL.ridgeY + 0.06, 0)
+}
+
+/** Fascia boards down the two eaves: the drawn edge of the roof, and the thing
+ *  the soffit shadow hangs under. */
+function barnEaves() {
+  const eaves = new THREE.Group()
+  for (const s of [-1, 1]) {
+    eaves.add(at(box(0.14, 0.36, GAMBREL.depth + 0.1, P.cream), (GAMBREL.eaveX + 0.04) * s, 3.8, 0))
+    // Wall-head trim, tucked just under the overhang on the two long walls.
+    eaves.add(at(box(10.5, 0.32, 0.32, P.cream), 0, EAVE_UNDER - 0.18, 4.02 * s))
+  }
+  return eaves
+}
+
+/** Header sits clear of EAVE_UNDER so the door surround finishes as a drawn
+ *  rectangle instead of running up behind the roof and getting cut. */
+const DOOR = { h: 3.42, leafW: 2.06 }
+
+function doorLeaf(side) {
+  const lh = DOOR.h - 0.34
+  const leaf = at(new THREE.Group(), 1.13 * side, DOOR.h / 2 - 0.12, 4.14)
+  leaf.add(box(DOOR.leafW, lh, 0.16, P.cream))
+  for (const y of [lh * 0.42, -lh * 0.42]) leaf.add(at(box(DOOR.leafW, 0.24, 0.1, P.barnRed), 0, y, 0.1))
+  const brace = Math.hypot(DOOR.leafW, lh)
+  const tilt = Math.atan2(DOOR.leafW, lh)
+  for (const a of [-1, 1]) leaf.add(at(rot(box(0.26, brace, 0.1, P.barnRed), 0, 0, a * tilt), 0, 0, 0.09))
+  return leaf
 }
 
 function barnDoors() {
   const doors = new THREE.Group()
-  doors.add(at(box(4.95, 4.85, 0.18, P.cream), 0, 2.4, 4.02))
-  for (const s of [-1, 1]) {
-    const leaf = at(new THREE.Group(), 1.13 * s, 2.3, 4.14)
-    leaf.add(box(2.06, 4.4, 0.16, P.cream))
-    for (const y of [2.0, -2.0]) leaf.add(at(box(2.06, 0.26, 0.1, P.barnRed), 0, y, 0.1))
-    for (const a of [-1, 1]) leaf.add(at(rot(box(0.26, 4.5, 0.1, P.barnRed), 0, 0, a * 0.44), 0, 0, 0.09))
-    doors.add(leaf)
-  }
+  doors.add(at(box(4.95, DOOR.h, 0.18, P.cream), 0, DOOR.h / 2, 4.02))
+  for (const s of [-1, 1]) doors.add(doorLeaf(s))
   return doors
 }
 
@@ -508,13 +581,14 @@ function barnLoft() {
 function buildBarn() {
   const g = new THREE.Group()
   g.add(extruded(barnWallShape(), 8, P.barnRed))
-  g.add(extruded(barnRoofShape(), 8.7, P.barnDark, ROOF_CURVE_SEGMENTS))
-  for (const s of [-1, 1]) g.add(at(box(10.5, 0.32, 0.32, P.cream), 0, 4.16, 4.02 * s))
+  g.add(extruded(barnRoofShape(), GAMBREL.depth, P.barnRoof))
+  g.add(barnEaves(), barnRidge())
+  const postH = EAVE_UNDER - 0.02
   for (const sx of [-1, 1]) {
-    for (const sz of [-1, 1]) g.add(at(box(0.32, 4.2, 0.32, P.cream), 5.04 * sx, 2.1, 3.94 * sz))
+    for (const sz of [-1, 1]) g.add(at(box(0.32, postH, 0.32, P.cream), 5.04 * sx, postH / 2, 3.94 * sz))
   }
   g.add(barnDoors(), barnLoft())
-  g.add(at(box(0.16, 4.4, 0.12, P.barnRed), 0, 2.3, 4.24))
+  g.add(at(box(0.16, DOOR.h - 0.12, 0.12, P.barnRed), 0, (DOOR.h - 0.12) / 2, 4.24))
   // The biggest silhouette on the farm has to carry the heaviest line, or it
   // dissolves into the field at viewing size — and the biggest COLLECTION of
   // forms needs the second pen most: without interior ink the gambrel meets
@@ -523,7 +597,9 @@ function buildBarn() {
   return addOutline(g, { pixels: INK_WEIGHT.HERO, interior: true })
 }
 
-/** Classic Saturday-morning barn: bulging gambrel, cream trim, X-braced doors. */
+/** Classic Saturday-morning barn: faceted gambrel with a hard knuckle crease,
+ *  projecting eaves, cream ridge cap and trim, X-braced doors. ~11.4 across the
+ *  eaves, 7.7 to the ridge cap. */
 export function makeBarn() {
   return withSteps(STEPS.ARCH, buildBarn)
 }
@@ -1019,6 +1095,25 @@ function blobShape(rnd, r, points = 9, squash = 0.72) {
   return s
 }
 
+/**
+ * The dark ellipse a cartoon draws under anything resting on the ground.
+ *
+ * A cast shadow map is a lighting effect and it fades out exactly where a prop
+ * meets the grass, which is the one place the drawing needs a hard note: with
+ * nothing under it a prop hovers no matter how correct its geometry is. This is
+ * the painted contact patch instead — flat, opaque-ish, no ink of its own,
+ * because the moment you outline a shadow it stops being a shadow.
+ */
+function contactShadow(rx, rz = rx, opacity = 0.4) {
+  const m = new THREE.Mesh(
+    new THREE.CircleGeometry(1, 18),
+    new THREE.MeshBasicMaterial({ color: 0x2e2416, transparent: true, opacity, depthWrite: false })
+  )
+  m.scale.set(rx, rz, 1)
+  m.receiveShadow = false
+  return at(rot(detail(m), -Math.PI / 2, 0, 0), 0, 0.012, 0)
+}
+
 /** Flat shape lying on the grass, inked along its BOUNDARY (addOutline's
  *  `flat`) rather than its face normals — a spill in a cartoon is a drawn
  *  shape with an edge, not a texture stain. */
@@ -1285,70 +1380,74 @@ export function makeCrateStack(seed = nextSeed()) {
 
 // -------------------------------------------------------------- wheelbarrow
 
-/** Tray, wheel, handles and legs, built upright and level. The tip is applied
- *  by the caller as one rotation, so the shape stays easy to read while it is
- *  being authored and only the pose is the gag. */
-function barrowRig() {
-  const rig = new THREE.Group()
-  rig.add(at(box(0.72, 0.44, 0.9, P.barnRed), 0, 0.63, 0.08))
-  rig.add(at(box(0.8, 0.09, 0.98, P.cream), 0, 0.86, 0.08))
-  rig.add(at(rot(tube(0.26, 0.26, 0.14, P.rubber, 14), 0, 0, Math.PI / 2), 0, 0.26, 0.78))
-  rig.add(detail(at(rot(tube(0.09, 0.09, 0.17, P.metalDark, 8), 0, 0, Math.PI / 2), 0, 0.26, 0.78)))
-  for (const s of [-1, 1]) {
-    rig.add(at(rot(box(0.09, 0.09, 1.7, P.wood), -0.1, 0, 0), 0.3 * s, 0.5, -0.32))
-    rig.add(at(box(0.09, 0.44, 0.09, P.wood), 0.3 * s, 0.24, -0.48))
-    rig.add(at(rot(box(0.07, 0.07, 0.62, P.woodDark), 0.6, 0, 0), 0.3 * s, 0.42, 0.5))
-  }
-  return rig
+/**
+ * Why this barrow is standing up.
+ *
+ * It used to be tipped: a parent yaw plus a pitch and a roll, three contacts,
+ * a lot of geometry describing a fall. It read as scrap. Not because the angles
+ * were wrong but because a tipped wheelbarrow has no silhouette anyone knows —
+ * the tray floats off the wheel, the two handles cross behind it in an X that
+ * nothing explains, and the legs become a plus-sign hanging in the air beside
+ * it. A cartoon prop that has to be explained is a failed prop, and the fastest
+ * way to fix an unreadable pose is to stop posing.
+ *
+ * Standing, every part states its own job in one glance: wheel at the front on
+ * the ground, tray between the handles, legs holding the back up, grips angled
+ * up and back in a clean parallel pair. Three contacts — wheel and two feet —
+ * and a painted shadow under each, so it sits on the grass rather than near it.
+ */
+function barrowTray() {
+  const tray = new THREE.Group()
+  tray.add(at(box(0.72, 0.44, 0.9, P.barnRed), 0, 0.63, 0.08))
+  // Raked front board: the flare that says "you tip things OUT of this".
+  tray.add(at(rot(box(0.74, 0.42, 0.1, P.barnDark), -0.3, 0, 0), 0, 0.68, 0.53))
+  tray.add(at(box(0.8, 0.09, 0.98, P.cream), 0, 0.86, 0.08))
+  return tray
+}
+
+function barrowWheel() {
+  const wheel = new THREE.Group()
+  wheel.add(at(rot(tube(0.26, 0.26, 0.14, P.rubber, 14), 0, 0, Math.PI / 2), 0, 0.26, 0.78))
+  wheel.add(detail(at(rot(tube(0.09, 0.09, 0.17, P.metalDark, 8), 0, 0, Math.PI / 2), 0, 0.26, 0.78)))
+  return wheel
+}
+
+/** One side's frame: handle, leg, foot pad and the fork down to the axle. All
+ *  four in one plane at x = 0.3·side, so the pair never crosses. */
+function barrowSide(side) {
+  const frame = new THREE.Group()
+  const x = 0.3 * side
+  frame.add(at(rot(box(0.09, 0.09, 1.74, P.wood), 0.16, 0, 0), x, 0.53, -0.3))
+  frame.add(at(box(0.1, 0.5, 0.1, P.wood), x, 0.29, -0.46))
+  frame.add(at(box(0.14, 0.1, 0.32, P.woodDark), x, 0.05, -0.5))
+  frame.add(at(rot(box(0.07, 0.07, 0.62, P.woodDark), 0.6, 0, 0), x, 0.42, 0.5))
+  return frame
 }
 
 /**
- * The pose, and why it is two nested rotations instead of one.
+ * Placement yaw this prop is authored against (world.js `_placeBarnYard`).
  *
- * A tipped barrow is only funny if you can still tell it is a barrow, and the
- * whole read hangs on the wheel: a disc seen edge-on is a black bar at a random
- * angle, and everything else in the drawing becomes debris around it. The old
- * pose put all three angles in ONE Euler, and Euler XYZ applies Y *inside* X
- * and Z — so the barrow's yaw was spun underneath its own fall. Turning it to
- * show the wheel also re-aimed the tip, the two fought, and the wheel came out
- * 15° off edge-on with the handles hidden behind the tray.
- *
- * Split in two, each rotation does one job. `yaw` is a parent group: which way
- * the barrow was pointing when it went over, and therefore how open the wheel
- * is to the camera. `pitch`/`roll` are the fall itself, about the barrow's own
- * axes. `y` seats the result so the wheel rim rests on the dirt (0.03 clear,
- * which the grass closes) and the tray's lower edge and near handle bed 0.09
- * INTO it — three contacts, well spread. A prop settled a little into the
- * ground reads as lying there; one balanced exactly on it reads as a glitch.
- */
-const BARROW = { yaw: 1.35, pitch: 0.4, roll: -1.05, y: 0.37 }
-
-/**
- * Placement yaw this pose is authored against (world.js `_placeBarnYard`).
- *
- * Presentation yaw is the SUM of the two, so the wheel's opening to the start
- * camera is a property of the pair, not of the model alone. At -0.9 + 1.35 the
- * disc reads about 80% open. Re-roll the placement and the gag goes back to a
- * black bar — read this instead, exactly as makePig's restYaw is read.
+ * At yaw 0 the barrow points its wheel straight at the start camera and the
+ * tray foreshortens to nothing. -0.9 swings it to three-quarter: wheel, tray
+ * side and both handles all in view at once. Read this instead of rolling
+ * dice, exactly as makePig's restYaw is read.
  */
 const BARROW_REST_YAW = -0.9
 
 function buildWheelbarrow() {
   const g = new THREE.Group()
-  // Nobody parks a barrow squarely on its legs; a catalogue photograph is not
-  // a drawing. It has gone over on its side, wheel up and facing out, one
-  // handle in the grass and the other thrown at the sky.
-  const spun = at(rot(new THREE.Group(), 0, BARROW.yaw, 0), -0.08, BARROW.y, 0.4)
-  spun.add(rot(barrowRig(), BARROW.pitch, 0, BARROW.roll))
-  g.add(spun)
+  g.add(barrowTray(), barrowWheel())
+  for (const s of [-1, 1]) g.add(barrowSide(s))
+  g.add(at(contactShadow(0.3, 0.22), 0, 0.012, 0.78))
+  g.add(at(contactShadow(0.52, 0.26), 0, 0.012, -0.48))
   g.userData.restYaw = BARROW_REST_YAW
   // Interior ink is what puts the circle back in the wheel: the tyre's two cap
   // rims are the only edges in the whole prop that describe it as round.
   return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
 }
 
-/** Red barrow tipped over on its side, wheel presented to camera and resting
- *  in the dirt. ~2.2 long along Z with the handles, ~1.5 across.
+/** Red barrow parked on its wheel and legs, handles up and back. ~2.4 long
+ *  along Z, ~0.8 across, 0.9 to the grips.
  *  `userData.restYaw` is the placement yaw the pose is authored for. */
 export function makeWheelbarrow() {
   return withSteps(STEPS.ARCH, buildWheelbarrow)
@@ -1380,6 +1479,137 @@ function buildMilkCan() {
  *  that warm wood — pairs well stood in twos and threes by a door. */
 export function makeMilkCan() {
   return withSteps(STEPS.ARCH, buildMilkCan)
+}
+
+// -------------------------------------------------------------- water trough
+
+/**
+ * A trough is a box with water in it, which is exactly why it is the easiest
+ * prop on the farm to draw as untextured placeholder geometry: brown box, cyan
+ * lid on top, done. Nothing in that says trough — a lid is not a liquid.
+ *
+ * Three things fix it and all three are drawing, not modelling. The water is
+ * INSET below a rim that stands proud, so the tub has wall thickness and the
+ * rim-to-water break is a real edge the interior-ink pass can stroke. The
+ * water carries a drawn highlight streak, because still water in a cel is
+ * always two tones and a line. And it is painted in P.water, the pond's blue,
+ * rather than a cyan of its own: one farm, one liquid.
+ */
+const TROUGH = { len: 2.2, depth: 0.9, wall: 0.14, floorY: 0.24, rimY: 0.74 }
+
+/** Plank tub: floor, two long walls, two ends. Boxes throughout, so every
+ *  corner of it is an edge the second pen finds. */
+function troughTub() {
+  const { len, depth, wall, floorY, rimY } = TROUGH
+  const tub = new THREE.Group()
+  const h = rimY - floorY
+  tub.add(at(box(len, 0.14, depth, P.wood), 0, floorY - 0.07, 0))
+  for (const s of [-1, 1]) {
+    tub.add(at(box(len, h, wall, P.wood), 0, floorY + h / 2, (depth / 2 - wall / 2) * s))
+    tub.add(at(box(wall, h, depth - wall * 2, P.wood), (len / 2 - wall / 2) * s, floorY + h / 2, 0))
+    // Skid under each end: the tub stands on something, and the gap under it
+    // is where the contact shadow gets to be a line rather than a smudge.
+    tub.add(at(box(0.24, 0.14, depth, P.woodDark), (len / 2 - 0.2) * s, floorY - 0.21, 0))
+  }
+  return tub
+}
+
+/** Rim lip standing proud of the tub on all four sides. This is the whole
+ *  difference between "trough" and "box": you can see the wall thickness. */
+function troughRim() {
+  const { len, depth, rimY } = TROUGH
+  const rim = new THREE.Group()
+  for (const s of [-1, 1]) {
+    rim.add(at(box(len + 0.2, 0.1, 0.24, P.woodDark), 0, rimY + 0.05, (depth / 2 - 0.08) * s))
+    rim.add(at(box(0.24, 0.1, depth + 0.2, P.woodDark), (len / 2 - 0.02) * s, rimY + 0.05, 0))
+  }
+  for (const s of [-1, 1]) {
+    rim.add(at(box(0.09, rimY - TROUGH.floorY + 0.1, depth + 0.04, P.metalDark), 0.68 * s, 0.49, 0))
+  }
+  return rim
+}
+
+/** Water surface, sunk 0.12 under the rim, with one drawn glare streak and a
+ *  short second one. Flat unlit slabs — a highlight is paint, not shading. */
+function troughWater() {
+  const { len, depth, wall } = TROUGH
+  const water = new THREE.Group()
+  const top = 0.62
+  water.add(at(box(len - wall * 2, 0.4, depth - wall * 2, P.water), 0, top - 0.2, 0))
+  const streaks = [[0.86, 0.07, -0.24, -0.08], [0.4, 0.055, 0.5, 0.13]]
+  for (const [w, d, x, z] of streaks) {
+    water.add(detail(at(rot(box(w, 0.02, d, P.waterLight), 0, 0.09, 0), x, top + 0.012, z)))
+  }
+  return water
+}
+
+function buildTrough() {
+  const g = new THREE.Group()
+  g.add(troughTub(), troughWater(), troughRim())
+  g.add(at(contactShadow(TROUGH.len * 0.52, TROUGH.depth * 0.56, 0.36), 0, 0.012, 0))
+  // Interior ink is the point of the whole rebuild: without it the rim, the
+  // wall and the water are three flat planes stacked with no line between them.
+  return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
+}
+
+/** Plank water trough, ~2.2 long, 0.84 to the rim, water inset below the lip
+ *  in the pond's own blue. Built at final size — do not scale it up. */
+export function makeTrough() {
+  return withSteps(STEPS.ARCH, buildTrough)
+}
+
+// ---------------------------------------------------------------------- pond
+
+/**
+ * Water is a SHAPE with a line around it.
+ *
+ * The old pond was three concentric circles blending softly into the grass: a
+ * dark disc peeking out from under a blue disc, which is a soft edge dressed as
+ * a rim. Now the bank and the water are each a wobbled blob carrying a real
+ * drawn boundary (toon.js `flat`, which strokes the outline in pixels instead
+ * of trying to inflate a coplanar hull), so there is a hard inked waterline
+ * with a mud bank drawn outside it. Both are built from ONE shape at two scales
+ * so the bank can never crawl inside the water.
+ */
+function pondReeds(rnd, radius) {
+  const reeds = new THREE.Group()
+  for (let i = 0; i < 3; i++) {
+    const a = 0.7 + i * 1.9 + rnd() * 0.5
+    const r = radius * (0.98 + rnd() * 0.12)
+    // Fan origin is the MIDDLE of each blade, so it sits at half a blade up or
+    // the reeds grow downward out of the bank.
+    reeds.add(at(strawFan(rnd, 5, 0.66, 0.38, P.leaf), Math.cos(a) * r, 0.45, Math.sin(a) * r * 0.88))
+  }
+  return reeds
+}
+
+function buildPond(radius, seed) {
+  const rnd = seeded(seed)
+  const g = new THREE.Group()
+  const shape = blobShape(rnd, radius, 13, 0.9)
+  g.add(scl(groundDecal(shape, P.mud, 0.018), 1.16, 1, 1.16))
+  g.add(groundDecal(shape, P.water, 0.04))
+  // Two flat glare streaks, same paint as the trough's — the eye should read
+  // the two water bodies as the same substance from across the field.
+  for (const [w, d, x, z, yaw] of [[radius * 0.8, 0.16, -radius * 0.1, -radius * 0.2, 0.12],
+    [radius * 0.34, 0.11, radius * 0.36, radius * 0.16, -0.2]]) {
+    g.add(detail(at(rot(box(w, 0.02, d, P.waterLight), 0, yaw, 0), x, 0.055, z)))
+  }
+  g.add(pondReeds(rnd, radius))
+  // Only the reeds are left uninked by the decal passes above; PROP weight puts
+  // them a step under the buildings and a step over the drawn waterline.
+  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+}
+
+/**
+ * Painted pond, `radius` across, with a hard inked waterline, a drawn mud bank
+ * and three reed tufts breaking the circle. Group origin is the pond centre on
+ * the ground plane; it is a decal, so it registers no obstacle of its own.
+ * @param {number} [radius]
+ * @param {number} [seed] omit for a fresh outline per call.
+ */
+export function makePond(radius = 3.4, seed = nextSeed()) {
+  return withSteps(STEPS.ARCH, () => buildPond(radius, seed))
 }
 
 // --------------------------------------------------------------- tire swing
@@ -1419,31 +1649,70 @@ export function makeTireSwing(height = 3.0) {
  * HERO: a background hen has to read as flock, and the moment two hens are the
  * same weight and scale the player loses track of which one is hers.
  */
-const PECKER_SCALE = 0.78
+// Lifting the tail into a readable fan also lifted her overall height, so the
+// scale comes down to hold the gap that keeps the flock from competing with the
+// protagonist: ~1.45 tall against the player hen's 2.03.
+const PECKER_SCALE = 0.72
+
+/**
+ * The peck pose, and the two things that were wrong with it.
+ *
+ * First, depth. The head sat at body-local z 0.36 against a torso whose front
+ * pole is at 0.35, then took another 0.42 of pitch on top of a 0.62 body — so
+ * at the bottom of the peck the skull was INSIDE the torso and the only part of
+ * it still outside the silhouette was the comb, surfacing halfway down the
+ * flank where it read as a wound. The head now sits at 0.52, which is a full
+ * head-radius clear of the ellipsoid, with a neck bridging the gap: the head,
+ * the beak and the comb all stay outside the body at the pose's lowest point,
+ * and the beak tip lands within a centimetre of the grass.
+ *
+ * Second, facing. The model span its own random yaw over the full circle, on
+ * top of whatever yaw world.js placed it at, so half the flock ended up tail-on
+ * — and a bird rendered tail-on is a featureless egg at any polish level, since
+ * everything that says "bird" (beak, comb, eye, breast) is on the front. She
+ * faces +Z now like every other model, with only a few degrees of jitter, and
+ * publishes the three-quarter yaw as restYaw for the placer to use.
+ */
+const PECKER = { bodyY: 0.52, pitch: 0.5, headY: 0.06, headZ: 0.52, headPitch: 0.5 }
+
+/** Yaw that presents her three-quarter to the start camera (which looks down
+ *  -Z): head, beak and tail fan all in view, none of them foreshortened. */
+const PECKER_REST_YAW = -1.05
+
+function peckerBody() {
+  const body = at(rot(new THREE.Group(), PECKER.pitch, 0, 0), 0, PECKER.bodyY, 0)
+  body.add(scl(ball(0.28, P.hen), 1.06, 0.95, 1.25))
+  // Neck out of the shoulder. Without it the clearance that keeps the head
+  // readable reads as a head floating off the front of a loaf.
+  body.add(strut(v3(0, -0.01, 0.25), v3(0, PECKER.headY - 0.01, PECKER.headZ - 0.04), 0.125, P.hen, 10))
+  body.add(at(rot(henHead(), PECKER.headPitch, 0, 0), 0, PECKER.headY, PECKER.headZ))
+  body.add(henWing(-1), henWing(1))
+  // Tail fanned wider and lifted: pitched this far forward the rear IS the
+  // silhouette, and a fan is the only shape that keeps it from being a rump.
+  body.add(at(scl(henTail(), 1.18), 0, 0.06, -0.3))
+  return body
+}
 
 function buildPeckingHen(seed) {
   const rnd = seeded(seed)
   const g = new THREE.Group()
   const rig = scl(new THREE.Group(), HEN_SCALE * PECKER_SCALE)
-  // Pitched hard forward: head in the dirt, tail thrown up. A standing hen is
-  // a duplicate of the player's; a pecking one is a different drawing.
-  const body = at(rot(new THREE.Group(), 0.62, 0, 0), 0, 0.47, 0)
-  body.add(scl(ball(0.28, P.hen), 1.06, 0.95, 1.25))
-  body.add(at(rot(henHead(), 0.42, 0, 0), 0, 0.1, 0.36))
-  body.add(henWing(-1), henWing(1), at(henTail(), 0, 0.02, -0.26))
   const [legL, legR] = [henLeg(-1), henLeg(1)]
   legL.position.z += 0.08
   legR.position.z -= 0.05
-  rig.add(body, legL, legR)
-  g.add(rot(rig, 0, rnd() * Math.PI * 2, 0))
+  rig.add(peckerBody(), legL, legR)
+  g.add(rot(rig, 0, (rnd() - 0.5) * 0.45, 0))
+  g.add(at(contactShadow(0.34, 0.26, 0.34), 0, 0.012, 0.06))
+  g.userData.restYaw = PECKER_REST_YAW
   return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
 }
 
 /**
- * Static decorative hen, head down mid-peck. Scaled to 0.78 of the player
- * hen and folded forward, so she stands about two thirds the protagonist's
- * height (1.36 vs 2.03) and never competes with her for the eye.
- * @param {number} [seed] omit for a fresh facing per call.
+ * Static decorative hen, head down mid-peck, neck and beak clear of the body.
+ * ~1.45 tall against the player hen's 2.03, so she reads as flock and never
+ * competes with the protagonist for the eye. Faces +Z; `userData.restYaw` is
+ * the three-quarter placement yaw the pose is drawn for.
+ * @param {number} [seed] omit for a fresh few degrees of jitter per call.
  */
 export function makePeckingHen(seed = nextSeed()) {
   return withSteps(STEPS.CHARACTER, () => buildPeckingHen(seed))

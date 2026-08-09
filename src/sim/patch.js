@@ -14,9 +14,10 @@ const RENDER_Y = 0.03
 const RING_COLOR = 0x2c4a1e
 // The patch boundary is the core mechanic's affordance — bolder than the
 // frame's default ink weight (toon.js INK_PIXELS) so it reads as the single
-// most legible line on screen, and always wins the depth test against the
-// ground it sits on (see the depthTest override applied after addOutline in
-// _buildVisuals) since it is a UI-grade affordance, not a lit 3D edge.
+// most legible line on screen, and wins against the ground it sits on via a
+// polygonOffset bias toward the camera (see the ink-shell tuning after
+// addOutline in _buildVisuals), not by disabling the depth test — real
+// geometry standing on the patch (chickens, the pig) must still occlude it.
 const RING_INK_PIXELS = 4
 // World-space height of the (invisible) rim wall used only to give the ink
 // outline real outward-facing normals to expand along — see buildWallGeometry.
@@ -276,21 +277,29 @@ export class Patch {
     addOutline(this._wallMesh, { color: RING_COLOR, pixels: RING_INK_PIXELS })
     // The generated ink shell inherits toon.js's default polygonOffset
     // (factor +1), which pushes it *away* from the camera — backwards for a
-    // decal that must always win against the ground surface it sits on, and
-    // on arcs where the rim wall runs near-tangent to the view it loses the
-    // depth test outright. This is a UI-grade affordance, not a lit 3D edge,
-    // so it always wins: disable depth testing/writing and draw it last.
+    // decal that must always win against the ground surface it sits on. But
+    // disabling depth testing outright (the previous fix here) made the ring
+    // draw THROUGH anything standing on the patch — a chicken or pig on the
+    // grass would get a dark band cut across its body. Depth test must stay
+    // on so real geometry standing on the patch still occludes the ring;
+    // what the ring needs is only to win against the *ground* it sits on,
+    // which polygonOffset (pulled toward the camera, same treatment as
+    // _discMesh above) plus renderOrder already achieves without touching
+    // depth testing at all.
     this._wallMesh.traverse((o) => {
       if (!o.userData.isOutline) return
-      o.material.depthTest = false
+      o.material.depthTest = true
       o.material.depthWrite = false
+      o.material.polygonOffset = true
+      o.material.polygonOffsetFactor = -2
+      o.material.polygonOffsetUnits = -2
       // The rim wall is an open tube (no top/bottom caps): on a closed hull
       // BackSide alone would work, but here the near half's quads face the
       // camera and get culled outright, leaving only the far arc inked. This
       // is a UI-grade decal, not a lit 3D edge, so draw both winding
       // directions instead of relying on hull closure.
       o.material.side = THREE.DoubleSide
-      o.renderOrder = 10
+      o.renderOrder = 6
     })
   }
 

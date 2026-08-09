@@ -37,9 +37,9 @@ const STYLE_CSS = `
   font-family: inherit;
 }
 .duk-money {
-  /* top-right, opposite the hint balloon's bottom-left corner — the two
-     panels sit on a diagonal so the UI doesn't pile all its weight on the
-     same side as the balloon while the barn/paddock mass sits on the right.
+  /* top-right, opposite the hint balloon at top-left — the two panels sit
+     on a shared top row so neither ever overlaps the ground-level action
+     (chickens, feet, patches) along the bottom of the frame.
      Stroke and shadow are restated here (not left to .duk-panel's default)
      so this chip reads as a hand-lettered title-card piece, not a modern
      app chip: 2.5px ink border in the shared INK color (matches the world's
@@ -75,17 +75,17 @@ const STYLE_CSS = `
 }
 .duk-money-amount.duk-bounce { animation: duk-text-bounce 0.35s ease-out; }
 .duk-hint {
-  /* bottom-left; the money chip has moved to top-right so the two panels
-     balance the composition on a diagonal instead of both hugging the left
-     edge against the barn/paddock mass on the right. Inset ~16px from the
-     viewport edge (the frame crop line), with the portrait/tail overhang
-     trimmed to stay inside that margin so the chicken-head tab clears the
-     crop instead of being cut off. The stronger -1.5deg tilt (was -0.8deg)
-     reads as a hand-lettered title card rather than a level UI chip. */
-  position: fixed; bottom: 24px; left: 16px;
+  /* top-left, paired on a top row with the money chip at top-right — moved
+     up off the bottom edge entirely so it can never sit over a character's
+     feet (the ground plane, and every hen silhouette on it, lives along the
+     bottom of frame). Width now hugs the text (fit-content, capped by
+     max-width so a long hint still wraps to 2 lines) instead of stretching
+     across the lower-left, so the panel reads as a small painted title
+     card rather than a bar spanning the shot. */
+  position: fixed; top: 28px; left: 16px;
   transform: rotate(-1.5deg);
   padding: 10px 26px 10px 34px; font-size: 15px; text-align: left;
-  max-width: 40vw;
+  width: fit-content; max-width: 300px;
   /* 2.5px ink border in the shared INK color (matches the world's ink, not
      its hero-outline thickness) and a hard 4px offset shadow with zero
      blur, so this chip is inked by the same pen as the money chip instead
