@@ -104,6 +104,32 @@ const SHADOW_WARM = [1.16, 0.97, 0.79]
 const shadowFloorFor = (steps) =>
   steps === CHARACTER_STEPS ? CHARACTER_SHADOW_FLOOR : SHADOW_FLOOR
 
+/**
+ * Where the lit family of steps begins, as a ramp position.
+ *
+ * A ramp with EVENLY spaced steps has no single break in it. At four steps the
+ * two middle bands sit halfway between the lit plane and the shadow plane, and
+ * a cast shadow crossing one of them lands on a third value that belongs to
+ * neither — which is precisely how one frame comes to show two different
+ * shadow languages: a decisive posterized edge where the shadow crosses a
+ * 2-step receiver, and a soft-looking multi-band gradient where it crosses a
+ * 4-step one.
+ *
+ * So the dark plane is held ALONE at 0 and every remaining step is packed into
+ * the lit half above this line. Whatever step count a caller asks for, the ramp
+ * has exactly ONE decisive break, in the same place, on every receiver in the
+ * frame; the extra steps become subtle modelling inside the light, which is
+ * what a painted cel does with them.
+ */
+const LIT_FLOOR = 0.55
+
+/** Ramp position of step `i` of `n` — 0 is the shadow plane, 1 the lit one. */
+function rampPosition(i, n) {
+  if (i === 0) return 0
+  if (n <= 2) return 1
+  return LIT_FLOOR + (1 - LIT_FLOOR) * ((i - 1) / (n - 2))
+}
+
 const gradientMaps = new Map()
 // Keyed by source geometry so hulls die with the model they belong to (eggs are
 // spawned and disposed constantly).
@@ -132,7 +158,7 @@ function gradientMap(steps) {
   const data = new Uint8Array(n * 4)
   const floor = shadowFloorFor(n)
   for (let i = 0; i < n; i++) {
-    const [r, g, b] = rampStep(i / (n - 1), floor)
+    const [r, g, b] = rampStep(rampPosition(i, n), floor)
     data.set([Math.round(255 * r), Math.round(255 * g), Math.round(255 * b), 255], i * 4)
   }
   const tex = new THREE.DataTexture(data, n, 1, THREE.RGBAFormat)
@@ -172,6 +198,12 @@ function useColouredRamp(shader) {
  * filter type the renderer is configured with.
  *
  * Both getShadow and getPointShadow end on this line; both are replaced.
+ * (Verified against three 0.180's shadowmap_pars_fragment: the string occurs
+ * exactly twice, at the tail of each function. If a three upgrade ever renames
+ * it, every cast shadow in the frame silently goes back to a PCF gradient —
+ * which is the one failure this file cannot detect at runtime, so the split/join
+ * below is deliberately a no-op rather than a throw, and the string is the
+ * thing to re-check first when shadows start looking photographic.)
  */
 const SOFT_SHADOW = 'return mix( 1.0, shadow, shadowIntensity );'
 const HARD_SHADOW = 'return mix( 1.0, step( 0.5, shadow ), shadowIntensity );'

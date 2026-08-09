@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { toonMaterial, addOutline } from '../art/toon.js'
+import { toonMaterial, addOutline, INK_WEIGHT } from '../art/toon.js'
 
 // Tunable: seconds for a fully-bare cell to regrow to fully-lush.
 export const REGROW_SECONDS = 90
@@ -11,67 +11,81 @@ const DISTANCE_WEIGHT = 0.12
 const PIXELS_PER_CELL = 24
 const MAX_CANVAS = 512
 const RENDER_Y = 0.03
-const RING_COLOR = 0x2c4a1e
-// The patch boundary is the core mechanic's affordance — bolder than the
-// frame's default ink weight (toon.js INK_PIXELS) so it reads as the single
-// most legible line on screen. Drawn via addOutline's `flat: true` path (the
-// same mechanism world.js uses to ink the road/rut boundary onto a flat
-// ground decal), which traces the literal open-edge boundary of the disc
-// geometry itself — see the addOutline call in _buildVisuals. Because the
-// ring is built FROM the disc's own geometry (not a separately-shaped wall),
-// fill and ring can never disagree about where the patch ends: no coincident
-// second shape to drift out of sync, no depth-order fight against the ground
-// decals it may sit over (decalMaterial's polygonOffset already wins against
-// both the road and the terrain — see toon.js). Depth test stays on via that
-// same mechanism — real geometry standing on the patch (chickens, the pig)
-// still occludes it.
-const RING_INK_PIXELS = 4
-// Gaussian blur radius (in canvas px) applied over the raw cell fill so cell
-// boundaries feather instead of stair-stepping. At PIXELS_PER_CELL=24 there
-// is enough resolution for this to actually hide the per-cell grid.
-const FEATHER_PX = 3.5
+// The patch boundary is the core mechanic's affordance and has to read as a
+// closed drawn shape, not a stray line — so it takes INK_WEIGHT.DECAL, the
+// exact same weight (and, by omitting `color` below, the exact same default
+// ink colour) world.js gives the road and the pond edge via the identical
+// `flat: true` mechanism (see buildPathMesh / the water addOutline call in
+// world.js). One consistent ink hierarchy across every ground shape in the
+// frame, rather than a bespoke weight/colour that only this shape used.
+// Drawn via addOutline's `flat: true` path, which traces the literal open-edge
+// boundary of the disc geometry itself — see the addOutline call in
+// _buildVisuals. Because the ring is built FROM the disc's own geometry (not a
+// separately-shaped wall), fill and ring can never disagree about where the
+// patch ends: no coincident second shape to drift out of sync, no depth-order
+// fight against the ground decals it may sit over (decalMaterial's
+// polygonOffset already wins against both the road and the terrain — see
+// toon.js). Depth test stays on via that same mechanism — real geometry
+// standing on the patch (chickens, the pig) still occludes it.
 
-// Lush must read as the *richest* grass in the picture — visibly higher
-// value AND saturation than the field base (world.js's ground tones run
-// ~0x86c057 to 0xb2d668, HSV V~0.75-0.84 / S~0.45-0.57), not just a deeper
-// hue that reads as the same green at a glance. A full patch is the hero
-// mechanic's payoff and must read as a bright disc, not an outline with an
-// interior indistinguishable from the surrounding grass. #48c91c carries
-// V≈0.79 / S≈0.86 — roughly +13-15% over the pre-fix #57b02c (V≈0.69,
-// S≈0.75) and pushed a few degrees cooler in hue — so it clears the field's
-// own V/S range on both axes instead of landing inside it. Grazed-out still
-// fades through dusty gold to dark umber. Tuned against the *decoded* (sRGB
-// colorSpace) texture output, not raw canvas hex — see the colorSpace
-// assignment in _buildVisuals.
-const LUSH = new THREE.Color('#48c91c')
+// Lush must read as TALLER, DENSER grass, not a brighter one: a lit lawn in
+// this frame runs ~0x86c057-0xb2d668 (HSV V~0.75-0.84 / S~0.45-0.57), and a
+// full patch used to push value/saturation ABOVE that range to read as the
+// "reward" state. On an actual rendered frame that reads as a light leak, not
+// grass — an unshaded blob glowing hotter than everything around it, which is
+// the opposite of what golden-age flats do with depth of foliage (thicker
+// grass goes DARKER, because more blades means less bare dirt scattering
+// light back up). #6ead4e sits at V≈0.68 / S≈0.55: a shade under the field's
+// own value range on the same saturation the field already uses, so it reads
+// as the same grass standing taller and catching its own shadow, not a
+// different, brighter material. The blade ticks in _paintGrassStrokes (drawn
+// densest exactly where a cell is lushest) carry the rest of the "taller
+// grass" read. Grazed-out still fades through dusty gold to dark umber. Tuned
+// against the *decoded* (sRGB colorSpace) texture output, not raw canvas hex
+// — see the colorSpace assignment in _buildVisuals.
+const LUSH = new THREE.Color('#6ead4e')
 const THIN = new THREE.Color('#cf9f2e')
 const BARE = new THREE.Color('#96652f')
 
 // Depletion must read as *shrinkage*, not a slow tint shift: the per-cell
-// food value t (0..1) is eased through this power curve before it drives the
-// color ramp below, so losing only the first ~30% of a cell's food already
-// visibly retreats it out of the lush band. Solved so t=0.7 (30% eaten)
-// lands right at the lush/thin midpoint (0.7^2 = 0.49) — cells nearest the
-// rim (eaten first) drop out of "lush" fast, so the lush core visibly
-// retreats inward from the boundary instead of the whole disc fading
-// together.
+// food value t (0..1) is eased through this power curve before it is compared
+// against the band cut points below, so losing only the first ~18% of a
+// cell's food (t drops from 1 to BAND_LUSH_MIN's t-equivalent, ~0.82) already
+// posterizes it out of the lush band — cells nearest the rim (eaten first)
+// drop out of "lush" fast, so the lush core visibly retreats inward from the
+// boundary instead of the whole disc fading together.
 const DEPLETION_CURVE_POWER = 2
 
 function easedFood(t) {
   return Math.pow(Math.max(0, t), DEPLETION_CURVE_POWER)
 }
 
+// Posterized into 3 flat, hard-stepped bands — lush / thinning / bare — the
+// same cel-shaded language as every toon ramp in the frame (see toon.js's
+// 2-4-step gradient maps), instead of a continuous LERP between named colors.
+// A cell's fullness is quantized to one of exactly three colors HERE, before
+// a single pixel is painted, so a cell boundary between two food levels is
+// always a hard step in the canvas data itself — never a blend for a blur
+// pass to soften into a gradient. That is what makes depletion read as a
+// drawn boundary advancing across flat shapes rather than a photographic
+// smear sitting inside the green.
+const BAND_LUSH_MIN = 0.6
+const BAND_THIN_MIN = 0.25
+
 function foodColor(t, target = new THREE.Color()) {
   const e = easedFood(t)
-  if (e >= 0.5) return target.copy(THIN).lerp(LUSH, (e - 0.5) * 2)
-  return target.copy(BARE).lerp(THIN, e * 2)
+  if (e >= BAND_LUSH_MIN) return target.copy(LUSH)
+  if (e >= BAND_THIN_MIN) return target.copy(THIN)
+  return target.copy(BARE)
 }
 
 // Grass-stroke overlay tuning — same visual language as world.js's
-// buildGroundTexture (short curved hand-drawn strokes, tonal variation), but
-// per-cell and food-driven instead of a static repeating tile. Cells below
-// GRASS_STROKE_MIN_FOOD paint as bare dirt with no strokes at all — depletion
-// is meant to read as texture loss, not just a hue shift.
+// buildGroundTexture (short hand-drawn ticks, tonal variation), but per-cell
+// and food-driven instead of a static repeating tile. Cells below
+// GRASS_STROKE_MIN_FOOD paint as bare dirt with no ticks at all — depletion
+// is meant to read as texture loss, not just a hue shift. Densest ticks on
+// the lushest (darkened) band are also what sells "taller grass" rather than
+// leaning on fill brightness alone — see the LUSH color comment above.
 const GRASS_STROKE_MIN_FOOD = 0.05
 const GRASS_MAX_STROKES_PER_CELL = 6
 // Steeper than DEPLETION_CURVE_POWER so blade texture thins out and drops
@@ -86,7 +100,7 @@ const GRASS_STROKE_FALLOFF_POWER = 3.5
 // array).
 const GRASS_STROKE_DARKEN = 0.8
 const GRASS_STROKE_TONES = [0.85, 1, 1.15]
-// Target stroke size in *world units*, matched to buildGroundTexture's own
+// Target tick size in *world units*, matched to buildGroundTexture's own
 // ~0.14-0.3u long / ~0.04-0.07u wide marks so a patch's grass and the
 // surrounding field's grass read as the same brush. Multiplied by pxPerCell
 // (px per 1 world unit, since CELL_SIZE = 1) to land in canvas space.
@@ -96,7 +110,7 @@ const GRASS_STROKE_WIDTH_MIN = 0.04
 const GRASS_STROKE_WIDTH_SPREAD = 0.03
 
 // Deterministic per-seed RNG (same LCG shape as world.js's local helper) so a
-// cell's stroke *positions* stay fixed across redraws — only how many of them
+// cell's tick *positions* stay fixed across redraws — only how many of them
 // are drawn changes with food, which reads as grass filling in / wearing away
 // rather than the whole patch re-jittering every tick.
 function seededRand(seed) {
@@ -104,50 +118,45 @@ function seededRand(seed) {
   return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296)
 }
 
-// Dominant lobe count for the scalloped boundary — a single low frequency
-// in this range (not the higher secondary jitter below) is what reads as
-// hand-drawn scallops instead of a mechanically-perfect circle.
-const SCALLOP_LOBES = 7
-const SCALLOP_AMPLITUDE = 0.08
-
-// A stable (non-random) wobble so the boundary reads as hand-drawn but never
-// re-jitters between rebuilds. Both the fill disc and the ink-outline rim
-// wall are built from these exact points, so they can never drift apart —
-// the fill can neither bleed past nor fall short of the line. The primary
-// term is the low-frequency scallop (SCALLOP_LOBES lobes, SCALLOP_AMPLITUDE
-// of the radius) that makes the ring read as drawn rather than a perfect
-// circle; the secondary term is a smaller, higher-frequency wobble layered
-// on top purely for hand-drawn irregularity, kept subordinate in amplitude
-// so it doesn't wash out the scallop read.
-function buildWobbledOutline(radius, segments = 72) {
-  const centers = []
+// Boundary sample points, evenly spaced around a plain circle. Both the fill
+// disc and the ink-outline rim are built from these exact points, so they can
+// never drift apart — the fill can neither bleed past nor fall short of the
+// line. The point at s=0 and s=segments are numerically identical (t=0 and
+// t=2*PI computed from the same formula), so the loop the disc geometry and
+// the ink ring both trace closes explicitly rather than approximately.
+//
+// This used to carry a low-frequency "scallop" plus a smaller high-frequency
+// wobble to read as hand-drawn. In practice that per-vertex jitter was what
+// broke the ink ring: `addOutline`'s `flat: true` path finds the boundary by
+// counting how many triangles touch each welded edge, and welding keys on a
+// ROUNDED position (see toon.js's `q()`), so any of the wobble's own numeric
+// noise landing near a rounding boundary could flip an edge's count and drop
+// it from the loop — the "runs down the left arc and stops" defect. A plain
+// circle removes that whole failure class and matches the flat ink weight
+// everything else on the ground plane uses; the boundary no longer needs to
+// look hand-inked on its own; the ink LINE (INK_WEIGHT.DECAL, drawn by
+// addOutline) is what carries that read, the same as the road and the pond.
+function buildOutline(radius, segments = 72) {
+  const points = []
   for (let s = 0; s <= segments; s++) {
     const t = (s / segments) * Math.PI * 2
-    const wobble =
-      1 + SCALLOP_AMPLITUDE * Math.sin(t * SCALLOP_LOBES + 1.3) + 0.025 * Math.sin(t * 17 + 0.6)
-    const r = radius * wobble
-    centers.push([Math.cos(t) * r, Math.sin(t) * r])
+    points.push([Math.cos(t) * radius, Math.sin(t) * radius])
   }
-  return centers
+  return points
 }
 
-// Flat triangle fan across the wobbled boundary, built directly in the
-// group's local XZ plane (no object rotation trick). UVs mirror
-// THREE.CircleGeometry's own mapping (normalized by the nominal, un-wobbled
-// diameter) so the canvas texture lands the same way it did before.
-function buildDiscGeometry(radius, centers) {
+// Flat triangle fan across the boundary, built directly in the group's local
+// XZ plane (no object rotation trick). UVs mirror THREE.CircleGeometry's own
+// mapping so the canvas texture lands the same way it did before.
+function buildDiscGeometry(radius, points) {
   const positions = [0, 0, 0]
   const uvs = [0.5, 0.5]
-  // Normalized against a diameter padded past the wobble's outward peak
-  // (1 + SCALLOP_AMPLITUDE + 0.025 = 1.105x radius) so outward-wobble arcs
-  // never push uv to/past 1.0 and clamp — that clamp was stretching the edge
-  // texel radially outward, smearing fill past the boundary on those arcs.
-  const uvDiameter = radius * 2 * 1.12
-  for (const [cx, cz] of centers) {
+  const uvDiameter = radius * 2
+  for (const [cx, cz] of points) {
     positions.push(cx, 0, cz)
     uvs.push(cx / uvDiameter + 0.5, cz / uvDiameter + 0.5)
   }
-  const segments = centers.length - 1
+  const segments = points.length - 1
   const index = []
   for (let s = 0; s < segments; s++) {
     // Wound so computeVertexNormals lands on +Y (up) — center, far, near.
@@ -204,13 +213,6 @@ export class Patch {
     canvas.height = size
     this._canvas = canvas
     this._ctx = canvas.getContext('2d')
-    // Raw (un-feathered) fill lives on a separate canvas; the visible texture
-    // is a blurred copy of it so cell boundaries feather, not stair-step.
-    const raw = document.createElement('canvas')
-    raw.width = size
-    raw.height = size
-    this._rawCanvas = raw
-    this._rawCtx = raw.getContext('2d')
     this._texture = new THREE.CanvasTexture(canvas)
     // Canvas bytes are sRGB-encoded (same as the ground texture in
     // world.js). Without this, three r180's NoColorSpace default treats them
@@ -218,12 +220,11 @@ export class Patch {
     // apparent lush/grazed value ramp.
     this._texture.colorSpace = THREE.SRGBColorSpace
 
-    // Fill and rim share one wobbled boundary so they're guaranteed
-    // coincident — no bleed on the inward arcs, no gap on the outward ones.
-    // Kept on the instance so _paintRawFill can clip the per-cell fill to the
-    // exact same smooth curve instead of the square cell grid's own jagged
-    // approximation of a circle.
-    const outline = buildWobbledOutline(this.radius)
+    // Fill and rim share one boundary so they're guaranteed coincident — no
+    // bleed on either side. Kept on the instance so _paintFill can clip the
+    // per-cell fill to this exact curve instead of the square cell grid's own
+    // jagged approximation of a circle.
+    const outline = buildOutline(this.radius)
     this._outline = outline
 
     // Same shading path as the ground beneath it (toon-lit, not unlit) so
@@ -252,16 +253,18 @@ export class Patch {
     this.group.add(this._discMesh)
 
     // Boundary ring via addOutline's `flat: true` path (toon.js) — the same
-    // mechanism world.js uses to ink the road/rut edge onto a flat ground
-    // decal. This traces the LITERAL open-edge boundary of the disc geometry
-    // just built (buildDiscGeometry's outer rim edges, each used by exactly
-    // one fan triangle), so the ring is not a second shape that could drift
-    // out of sync with the fill — it IS the fill's own edge. Its decal
-    // material (toon.js) carries a polygonOffset far deeper than either the
-    // disc's or the road's, tuned specifically to beat both the decal it
-    // rims and the terrain under it, so it wins against the road even on
-    // arcs where the fill's own offset match above only ties.
-    addOutline(this._discMesh, { color: RING_COLOR, pixels: RING_INK_PIXELS, flat: true })
+    // mechanism world.js uses to ink the road/rut edge and the pond edge onto
+    // a flat ground decal, at the same INK_WEIGHT.DECAL and (by omitting
+    // `color`) the same default ink colour those use. This traces the LITERAL
+    // open-edge boundary of the disc geometry just built (buildDiscGeometry's
+    // outer rim edges, each used by exactly one fan triangle), so the ring is
+    // not a second shape that could drift out of sync with the fill — it IS
+    // the fill's own edge. Its decal material (toon.js) carries a
+    // polygonOffset far deeper than either the disc's or the road's, tuned
+    // specifically to beat both the decal it rims and the terrain under it,
+    // so it wins against the road even on arcs where the fill's own offset
+    // match above only ties.
+    addOutline(this._discMesh, { pixels: INK_WEIGHT.DECAL, flat: true })
   }
 
   _disposeVisuals() {
@@ -300,17 +303,16 @@ export class Patch {
   }
 
   _redrawTexture() {
-    this._paintRawFill()
-    this._featherFillToTexture()
+    this._paintFill()
     this._paintGrassStrokes()
     this._texture.needsUpdate = true
   }
 
-  // Canvas-space path tracing the same wobbled boundary the disc geometry
-  // and ink rim are built from, in the same pixel coordinates _paintRawFill
-  // draws cells in (see the i*px/j*px mapping there). Clipping fill to this
-  // means the visible edge is always that smooth curve, never the square
-  // cell grid's own stair-stepped approximation of a circle.
+  // Canvas-space path tracing the same boundary the disc geometry and ink rim
+  // are built from, in the same pixel coordinates _paintFill draws cells in
+  // (see the i*px/j*px mapping there). Clipping fill to this means the
+  // visible edge is always that smooth curve, never the square cell grid's
+  // own stair-stepped approximation of a circle.
   _outlineClipPath() {
     const half = (this._cols - 1) / 2
     const px = this._pxPerCell
@@ -325,14 +327,20 @@ export class Patch {
     return path
   }
 
-  // Hard-edged per-cell fill onto the offscreen raw canvas, clipped to the
-  // wobbled boundary so no square cell corner can ever poke past the rim.
-  _paintRawFill() {
-    const ctx = this._rawCtx
+  // Hard-edged per-cell fill straight onto the visible texture canvas,
+  // clipped to the boundary so no square cell corner can ever poke past the
+  // rim. Every cell paints exactly one of the three posterized band colors
+  // from foodColor — no blur pass runs over this afterward, so a cell
+  // boundary between two food levels stays a hard step in the final pixels,
+  // matching the flat-shaded, hard-stepped-shadow language the rest of the
+  // frame uses (see toon.js's HARD_SHADOW). A soft gradient here previously
+  // read as a photographic smear sitting inside an otherwise flat-shaded cel.
+  _paintFill() {
+    const ctx = this._ctx
     const cols = this._cols
     const px = this._pxPerCell
     const scratch = new THREE.Color()
-    ctx.clearRect(0, 0, this._rawCanvas.width, this._rawCanvas.height)
+    ctx.clearRect(0, 0, this._canvas.width, this._canvas.height)
     ctx.save()
     ctx.clip(this._outlineClipPath())
     for (let j = 0; j < cols; j++) {
@@ -347,32 +355,14 @@ export class Patch {
     ctx.restore()
   }
 
-  // Blurs the raw fill onto the visible texture so cell boundaries feather
-  // into each other instead of reading as a hard, stair-stepped alpha mask.
-  _featherFillToTexture() {
-    const ctx = this._ctx
-    ctx.clearRect(0, 0, this._canvas.width, this._canvas.height)
-    ctx.save()
-    ctx.filter = `blur(${FEATHER_PX}px)`
-    ctx.drawImage(this._rawCanvas, 0, 0)
-    ctx.restore()
-    // The blur above bleeds ~FEATHER_PX past the raw fill's clip on every
-    // arc. Re-clip to the same wobbled boundary the ink ring is built from
-    // so the feather stays strictly inside the line instead of smearing past
-    // it.
-    ctx.save()
-    ctx.globalCompositeOperation = 'destination-in'
-    ctx.fill(this._outlineClipPath())
-    ctx.restore()
-  }
-
-  // Paints hand-drawn grass strokes on top of the feathered fill, crisp
-  // (not blurred, unlike the base fill) so they read as brush detail rather
-  // than getting mushed into the feather pass — same intent as
-  // buildGroundTexture's strokes in world.js, just per-cell and food-driven:
-  // a full cell gets a dense little cluster of dark-green marks, a thin cell
-  // gets a sparse few, a bare cell gets none at all (just the dirt fill).
-  // This is what makes depletion read as texture loss, not only color loss.
+  // Paints flat blade ticks on top of the posterized fill — straight strokes,
+  // not curves, so they read as a cel artist's short pen ticks rather than
+  // brush-painted detail; same intent as buildGroundTexture's marks in
+  // world.js, just per-cell and food-driven: a full (darkened, "taller
+  // grass") cell gets a dense little cluster of dark ticks, a thin cell gets
+  // a sparse few, a bare cell gets none at all (just the dirt fill). This is
+  // what sells "taller grass" and what makes depletion read as texture loss,
+  // not only color loss — see the LUSH color comment above.
   _paintGrassStrokes() {
     const ctx = this._ctx
     const cols = this._cols
@@ -403,12 +393,7 @@ export class Patch {
           const len = (GRASS_STROKE_LEN_MIN + rnd() * GRASS_STROKE_LEN_SPREAD) * px
           ctx.beginPath()
           ctx.moveTo(x, y)
-          ctx.quadraticCurveTo(
-            x + Math.cos(a) * len * 0.5,
-            y + Math.sin(a) * len * 0.5 - len * 0.2,
-            x + Math.cos(a) * len,
-            y + Math.sin(a) * len
-          )
+          ctx.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len)
           ctx.stroke()
         }
       }

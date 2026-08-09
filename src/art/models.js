@@ -208,7 +208,18 @@ const clockNow = () =>
  * 0.05 against a 0.175 radius), and every lobe is raked forward so the whole
  * crest points where she is going.
  */
-const COMB_LOBES = [[0.075, 0.235, 1.3], [0.115, 0.105, 1.55], [0.08, -0.025, 1.3]]
+/**
+ * Every lobe is ~35% larger than it was, and the crest sits a shade lower.
+ *
+ * At thumbnail size the hen was reading as "white ellipsoid with a small head":
+ * the body carried the whole silhouette and the one shape that says CHICKEN was
+ * too small to survive the downsample. The comb and the beak are the hen's
+ * identifiers, so they are drawn at identifier scale — 0.096 → 0.13 on the
+ * lobes, 0.115 → 0.155 on the blade under them — while the body loses 10% (see
+ * buildChicken). The anchor drops 0.125 → 0.115 to spend the extra height on
+ * the crest rather than on the hen's overall stature.
+ */
+const COMB_LOBES = [[0.082, 0.246, 1.3], [0.125, 0.11, 1.55], [0.09, -0.026, 1.3]]
 const COMB_RAKE = -0.3
 
 function henComb() {
@@ -217,9 +228,9 @@ function henComb() {
   // on the brow. A comb is a single crest with points cut into it; three loose
   // blobs perched on a skull leave the forward point floating in air the moment
   // the crest is pushed far enough forward to actually lead the head.
-  comb.add(at(rot(scl(ball(0.115, P.comb, 14), 0.42, 0.5, 1.55), -0.18, 0, 0), 0, 0.02, 0.09))
+  comb.add(at(rot(scl(ball(0.155, P.comb, 14), 0.42, 0.5, 1.5), -0.18, 0, 0), 0, 0.02, 0.095))
   for (const [y, z, tall] of COMB_LOBES) {
-    comb.add(at(rot(scl(ball(0.096, P.comb, 14), 0.5, tall, 1.0), COMB_RAKE, 0, 0), 0, y, z))
+    comb.add(at(rot(scl(ball(0.13, P.comb, 14), 0.5, tall, 1.0), COMB_RAKE, 0, 0), 0, y, z))
   }
   return comb
 }
@@ -229,53 +240,64 @@ function henHead() {
   head.add(ball(0.175, P.hen))
   // Forward along the head's +Z, not centred on the crown: the crest overhangs
   // the brow and the beak root, so it leads the head from any angle.
-  const comb = at(henComb(), 0, 0.125, 0.05)
+  const comb = at(henComb(), 0, 0.115, 0.05)
   head.add(comb)
-  head.add(at(rot(spike(0.082, 0.27, P.beak, 10), Math.PI / 2), 0, -0.02, 0.26))
-  head.add(at(ball(0.062, P.comb, 12), 0, -0.11, 0.15))
-  head.add(at(ball(0.046, P.comb, 12), 0, -0.18, 0.12))
+  // Beak up 35% with the comb: the two saturated points of the head have to
+  // move together or the enlarged crest just makes the face look smaller.
+  head.add(at(rot(spike(0.111, 0.365, P.beak, 10), Math.PI / 2), 0, -0.03, 0.255))
+  head.add(at(ball(0.078, P.comb, 12), 0, -0.115, 0.15))
+  head.add(at(ball(0.058, P.comb, 12), 0, -0.195, 0.12))
   for (const s of [-1, 1]) {
-    head.add(at(ball(0.058, P.shell, 12), 0.08 * s, 0.05, 0.12))
-    head.add(detail(at(ball(0.034, INK, 10), 0.092 * s, 0.055, 0.152)))
+    head.add(at(ball(0.066, P.shell, 12), 0.082 * s, 0.05, 0.115))
+    head.add(detail(at(ball(0.04, INK, 10), 0.096 * s, 0.055, 0.15)))
   }
   head.userData.comb = comb
   return head
 }
 
 /**
- * Feather strokes: [length, butt radius, y, z, rake].
+ * Feather strokes: [length, butt radius, y, z, rake]. There is exactly ONE.
  *
- * They used to be three ink slabs of uniform width in the silhouette's own
- * black — three heavy bars across a cream flank, which is a censor bar, not a
- * wing. A drawn feather is a TAPERED stroke: fat where the quill leaves the
- * shoulder, thin to nothing at the tip, laid along the arc of the wing rather
- * than square across it, and always a weight lighter than the contour that
- * cuts the bird out of the sky. Cones give the taper for free.
+ * There used to be three, and together they were the whole wing's read: three
+ * grey-brown tapers laid across a cream blob that sat at the same value as the
+ * flank behind it. The blob contributed nothing, so what arrived on screen was
+ * three brown slivers with no shape around them — a dirt smear on the hen's
+ * side, with no closed outline anywhere in it. The wing is built from two
+ * inked SHAPES now (henWing), and the stroke is back to being what a stroke is
+ * for: one drawn quill on a form that already reads without it.
  */
-const WING_FEATHERS = [
-  [0.24, 0.05, -0.015, 0.06, 0.2],
-  [0.28, 0.044, -0.1, 0.03, 0.1],
-  [0.23, 0.036, -0.185, -0.01, 0.0],
-]
+const WING_FEATHERS = [[0.22, 0.034, -0.115, -0.06, 0.14]]
 
 /** One tapered stroke, flattened to a blade and pointed down the wing's trailing
  *  edge. Pierces the plumage instead of floating on it, so it stays welded to a
- *  curved surface at every camera angle. */
+ *  curved surface at every camera angle — hence the x offset, which straddles
+ *  the covert plate's own surface rather than sitting inside it (a stroke fully
+ *  inside the plate draws nothing at all). */
 function featherStroke([len, r, y, z, rake], side) {
   const blade = scl(spike(r, len, P.featherInk, 6), 0.3, 1, 1)
-  // Apex to -Z (the tail) so the stroke thins toward its tip, then raked so
-  // the three of them fan along the wing's curve instead of running parallel.
+  // Apex to -Z (the tail) so the stroke thins toward its tip.
   const stroke = rot(detail(blade), -Math.PI / 2 + rake, 0.12 * side, 0)
-  return at(stroke, 0.05 * side, y, z - len * 0.18)
+  return at(stroke, 0.044 * side, y, z - len * 0.18)
 }
 
-/** Wing mass plus three drawn feather strokes. Without them the wing is a cream
- *  blob on a cream body, separated by a value step the toon ramp may not even
- *  make — the one place a cel drawing would never leave the pen up. */
+/**
+ * The wing is TWO closed shapes with a flat value break between them.
+ *
+ * A cream plate on a cream body separated by nothing is not a wing; whether the
+ * toon ramp happens to break between them depends on where the sun is, and on
+ * the shaded side it never does. So: the covert plate keeps the plumage's cream
+ * and the primaries blade below it is a full step darker (P.henShade), and the
+ * blade is pushed down and back far enough to hang PAST the torso's underside
+ * at the rear — the wing owns a piece of the hen's silhouette instead of being
+ * a stain inside it. Both are separate meshes, so addOutline closes an ink
+ * contour around each: the break between covert and primaries is a drawn line,
+ * and the wing has an outline that shuts.
+ */
 function henWing(side) {
-  const wing = at(new THREE.Group(), 0.27 * side, 0.05, -0.02)
-  wing.add(at(scl(ball(0.17, P.hen, 16), 0.3, 0.82, 1.05), 0.015 * side, -0.1, 0))
-  wing.add(at(scl(ball(0.095, P.henShade, 12), 0.3, 0.85, 1.1), 0.02 * side, -0.21, -0.07))
+  const wing = at(new THREE.Group(), 0.295 * side, 0.03, -0.03)
+  wing.add(at(scl(ball(0.19, P.hen, 16), 0.26, 0.8, 1.15), 0.01 * side, -0.05, -0.02))
+  const primaries = scl(ball(0.125, P.henShade, 14), 0.3, 0.62, 1.35)
+  wing.add(at(rot(primaries, 0.22, 0, 0), 0.012 * side, -0.185, -0.2))
   for (const feather of WING_FEATHERS) wing.add(featherStroke(feather, side))
   return wing
 }
@@ -320,33 +342,75 @@ function henTail() {
  * The foot also comes in: shorter toes and a rear spur, so it stops reaching
  * out past the body where it can be read on its own.
  */
-const LEG = { hipY: 0.32, shank: 0.34, rTop: 0.062, rBot: 0.07 }
+/**
+ * `hipY` — how far the socket sits above the ground.
+ * `stance` — half the distance between the two legs.
+ * `lift` — how far the SOLE floats above y=0 (see henFoot).
+ *
+ * The rig read as a torso resting on two yellow stubs, and the arithmetic says
+ * why. The occluder above the shank is not the torso, it is the feathered thigh
+ * (henThigh), and the thigh hung to `hipY - 0.155` while the shank ended at
+ * `hipY - 0.33` — 0.175 of visible limb, 51% of a 0.34 shank, and that fraction
+ * was INVARIANT under hipY, so raising the hip alone could never have fixed it.
+ * Three numbers move instead: the thigh is flattened (0.8 in y) and lifted so
+ * it stops at `hipY - 0.104`, the shank is dropped a further 0.02 so it ends at
+ * `hipY - 0.36`, and the body loses 10%, which raises the torso's underside on
+ * its own. That is 0.246 of bare shank, 72%, before the foot takes any of it.
+ *
+ * `stance` widens 0.11 → 0.155 (0.28 → 0.39 in world units after HEN_SCALE):
+ * enough daylight between the two limbs that the far one is a separate shape at
+ * the tycoon azimuth instead of hiding behind the near one. Wider than this is
+ * a duck.
+ */
+const LEG = { hipY: 0.44, shank: 0.34, rTop: 0.062, rBot: 0.07, stance: 0.155, lift: 0.062 }
 
 /**
- * The foot is centred on the ankle, not cantilevered forward off it.
+ * Shank centre, relative to the hip.
  *
- * Every centimetre a toe reaches ahead of the pivot is a centimetre it drives
- * INTO the road when the walk cycle swings the leg forward — the old 0.24 toes
- * put the front foot 13 cm underground at mid-stride. Pulled back to a 0.165
- * reach against the ankle's own 0.05 rise, the sole stays within a couple of
- * centimetres of the grass through the whole cycle.
+ * Derived rather than typed, because three numbers have to stay true at once
+ * and they were drifting apart every time one of them moved: the tube must end
+ * 0.02 ABOVE the sole (a shank finishing below the foot pad leaves a yellow rim
+ * under it, which then becomes the model's lowest vertex and the first thing
+ * the road cuts through), it must still reach the socket, and it must not
+ * change length while doing either.
+ */
+const shankY = () => LEG.lift - LEG.hipY + 0.02 + LEG.shank / 2
+
+/**
+ * The foot is centred on the ankle, and the SOLE floats.
+ *
+ * Two separate failures live in this function. The first is reach: every
+ * centimetre a toe extends ahead of the hip pivot is a centimetre the walk
+ * cycle's ±0.55 rad swing drives downward (`y' = y·cosθ − z·sinθ`), and at the
+ * old 0.165 reach that term beat the 0.056 the shank gains from its own
+ * shortening — the front foot went under the road at mid-stride. At a 0.119
+ * reach the sign flips: the toe RISES through the whole swing, so the sole's
+ * rest height is also its lowest height.
+ *
+ * The second is that a rest height of exactly 0 is not clearance. The road and
+ * the patch are drawn shapes lying at y=0.02 and y=0.03 with an ink line down
+ * their boundary, so a sole at 0 is BEHIND them and the road's rut line cuts
+ * across the toes. `LEG.lift` puts the sole at 0.079 in world units — clear of
+ * both decals and of their ink, with 0.03 still in hand against the root's
+ * ±0.06 walk roll, which tips the outboard foot down by 0.017.
  */
 function henFoot() {
-  const foot = at(new THREE.Group(), 0, -LEG.hipY, 0)
-  foot.add(at(box(0.13, 0.06, 0.13, P.beak), 0, 0.03, 0))
-  for (const a of [-0.52, 0, 0.52]) {
-    foot.add(at(rot(box(0.06, 0.052, 0.17, P.beak), 0, a, 0), Math.sin(a) * 0.058, 0.03, 0.08))
+  const foot = at(new THREE.Group(), 0, LEG.lift - LEG.hipY, 0)
+  foot.add(at(box(0.15, 0.055, 0.11, P.beak), 0, 0.0275, -0.008))
+  for (const a of [-0.55, 0, 0.55]) {
+    foot.add(at(rot(box(0.058, 0.05, 0.1, P.beak), 0, a, 0), Math.sin(a) * 0.062, 0.026, 0.048))
   }
   // Rear spur: three toes forward and nothing behind is a fork, not a foot.
-  foot.add(at(box(0.055, 0.05, 0.09, P.beak), 0, 0.03, -0.07))
+  // Its lowest vertex is the model's lowest, at LEG.lift + 0.001.
+  foot.add(at(box(0.055, 0.048, 0.085, P.beak), 0, 0.026, -0.075))
   return foot
 }
 
 function henLeg(side) {
-  const leg = at(new THREE.Group(), 0.11 * side, LEG.hipY, 0.02)
+  const leg = at(new THREE.Group(), LEG.stance * side, LEG.hipY, 0.02)
   leg.add(scl(ball(0.098, P.hen, 12), 1, 0.92, 1))
-  leg.add(at(tube(LEG.rTop, LEG.rBot, LEG.shank, P.beak, 8), 0, 0.01 - LEG.shank / 2, 0))
-  leg.add(at(ball(0.054, P.beak, 10), 0, -0.165, 0))
+  leg.add(at(tube(LEG.rTop, LEG.rBot, LEG.shank, P.beak, 8), 0, shankY(), 0))
+  leg.add(at(ball(0.054, P.beak, 10), 0, shankY(), 0))
   leg.add(henFoot())
   return leg
 }
@@ -361,8 +425,12 @@ function henLeg(side) {
  * between torso and limb.
  */
 function henThigh(side, bodyY) {
-  const thigh = scl(ball(0.135, P.hen, 12), 0.95, 1, 1.05)
-  return at(thigh, 0.11 * side, LEG.hipY - bodyY - 0.02, 0.02)
+  // Flattened and lifted (was 0.135 round at hipY-0.02): the round thigh was
+  // the thing swallowing the shank, and it was doing it for no silhouette gain
+  // — a hen's thigh is a feathered wedge tucked under the flank, not a ball.
+  // It still overlaps the shank top by 0.104, well past any bob amplitude.
+  const thigh = scl(ball(0.13, P.hen, 12), 0.95, 0.72, 1.05)
+  return at(thigh, LEG.stance * side, LEG.hipY - bodyY - 0.01, 0.02)
 }
 
 /** She is the subject of the game, so she is drawn at protagonist scale rather
@@ -370,17 +438,29 @@ function henThigh(side, bodyY) {
 const HEN_SCALE = 1.8
 
 /** Body centre. Raised from 0.46 so the underside clears the hip: at 0.50 the
- *  ellipsoid bottoms out at 0.234 and roughly three quarters of the shank is
- *  outside the torso, which is what makes the leg a limb instead of a talon. */
+ *  ellipsoid bottoms out at 0.261 (0.234 before the 10% body reduction) and
+ *  roughly three quarters of the shank is outside the torso, which is what
+ *  makes the leg a limb instead of a talon. */
 const HEN_BODY_Y = 0.5
+
+/**
+ * Torso radius, down 10% from 0.28.
+ *
+ * At thumbnail scale the hen was "a white ellipsoid with a small head", and the
+ * cure for that is a ratio, not a bigger head alone: the body gives up 10% at
+ * the same time the comb and beak take 35%. It also buys 0.027 of extra leg
+ * clearance for free, because the underside comes up with it.
+ */
+const HEN_BODY_R = 0.252
 
 function buildChicken() {
   const g = new THREE.Group()
   const rig = scl(new THREE.Group(), HEN_SCALE)
   const body = at(new THREE.Group(), 0, HEN_BODY_Y, 0)
-  body.add(scl(ball(0.28, P.hen), 1.06, 0.95, 1.25))
+  body.add(scl(ball(HEN_BODY_R, P.hen), 1.06, 0.95, 1.25))
   // Head rides high and forward so head-vs-body still reads as two shapes from
-  // the steep tycoon camera.
+  // the steep tycoon camera. The offset is unchanged while the body shrank, so
+  // the neck junction opens up rather than closing.
   const head = at(henHead(), 0, 0.28, 0.24)
   const wingL = henWing(-1)
   const wingR = henWing(1)
@@ -393,9 +473,11 @@ function buildChicken() {
   g.add(rig)
   // She is the subject standing on the road: without a hard note under her she
   // hovers, exactly as the pig did.
-  // 0.05 clears the patch disc (RENDER_Y 0.03) and the road, and survives the
-  // ±0.06 body roll the walk cycle puts on the root without dipping underground.
-  g.add(at(contactShadow(0.46, 0.36, 0.42), 0, 0.05, 0.02))
+  // 0.07 sits above every drawn ground shape she can stand on (road 0.02,
+  // patch disc 0.03, rut ribbon 0.045) and below her lifted sole (0.112, see
+  // LEG.lift), so the painted note is under the bird from any angle and no
+  // decal punches through it.
+  g.add(at(contactShadow(0.46, 0.36, 0.42), 0, 0.07, 0.02))
   g.userData.parts = { body, head, comb: head.userData.comb, wingL, wingR, legL, legR, tail }
   // Heaviest line in the frame: the subject reads before the props do. She is
   // built from smooth blobs, so crease extraction finds almost nothing on her —
@@ -403,8 +485,10 @@ function buildChicken() {
   return addOutline(g, { pixels: INK_WEIGHT.HERO, interior: true })
 }
 
-/** Cream hen, ~1.85 to the comb tips: beach-ball body, oversized head, huge
- *  comb, stubby wings, skinny legs, big splayed feet. */
+/** Cream hen, ~2.2 to the comb tips: beach-ball body, oversized head, huge
+ *  comb, two-tone wings, skinny legs, big splayed feet. The sole rests at
+ *  y≈0.08, not 0 — see LEG.lift; anything that seats her by matching a foot to
+ *  the terrain must account for it. */
 export function makeChicken() {
   return withSteps(STEPS.CHARACTER, buildChicken)
 }
@@ -1013,20 +1097,44 @@ export function makeHaystack(seed = nextSeed()) {
  *  whole gag away, so world.js should read this instead of rolling dice. */
 const PIG_REST_YAW = -0.4
 
-/** Cheek on the grass: the skull sits low and the snout dips into the dirt. */
+/**
+ * Head up on a propped neck — she is dozing, not decapitated.
+ *
+ * Cheek-on-the-grass is the truer pose and it is unreadable from this camera.
+ * The skull sat at y 0.33 with a crown at 0.66 against a belly whose top is
+ * 0.588: three fingers of pink above pink, no ink between them, at a 30°
+ * elevation that projects the difference down to nearly nothing. What arrived
+ * on screen was one abstract pink loaf, near the middle of the frame, with no
+ * animal in it. Everything here exists to break that silhouette in two:
+ *
+ * - the skull moves up 0.17 and out 0.12, so 0.25 of head clears the belly's
+ *   top instead of 0.07, and a neck wedge carries it there (a head lifted with
+ *   nothing under it is a ball parked beside a body),
+ * - the snout is a DISC on the axis she faces, not a barrel lying across it,
+ *   and it is P.pigDark with two ink nostrils — the darkest note on the animal
+ *   and the one that says which end is the front,
+ * - the ears go up 35% and sit on the crown where they bite the outline,
+ * - and the head-to-shoulder break is DRAWN. Crease extraction cannot find it:
+ *   head and neck are smooth spheres that interpenetrate, so there is no edge
+ *   in the mesh anywhere near the join. It is an ink slab, raked forward like a
+ *   jaw line, piercing both forms so it stays welded at any camera angle.
+ */
 function pigHead() {
   const head = new THREE.Group()
-  head.add(at(ball(0.33, P.pig), 0.58, 0.33, 0.06))
-  head.add(at(rot(tube(0.19, 0.21, 0.2, P.pigDark, 14), 0, 0, Math.PI / 2), 0.95, 0.24, 0.14))
-  for (const s of [-1, 1]) head.add(detail(at(ball(0.035, INK, 8), 1.05, 0.24, 0.14 + 0.07 * s)))
+  head.name = 'pig-head'
+  head.add(at(scl(ball(0.3, P.pig, 14), 1, 0.86, 1), 0.42, 0.4, 0.08))
+  head.add(at(ball(0.34, P.pig), 0.7, 0.5, 0.1))
+  head.add(at(rot(tube(0.2, 0.22, 0.22, P.pigDark, 14), 0, 0, Math.PI / 2), 1.0, 0.42, 0.14))
+  for (const s of [-1, 1]) head.add(detail(at(ball(0.045, INK, 8), 1.12, 0.42, 0.14 + 0.075 * s)))
   for (const s of [-1, 1]) {
-    const ear = scl(spike(0.17, 0.3, P.pigDark, 8), 1, 1, 0.45)
-    head.add(at(rot(ear, 0.75, 0, -0.9), 0.44, 0.52, 0.04 + 0.2 * s))
+    const ear = scl(spike(0.2, 0.32, P.pigDark, 8), 1, 1, 0.42)
+    head.add(at(rot(ear, 0.7, 0, -0.85), 0.6, 0.72, 0.08 + 0.22 * s))
   }
+  head.add(at(rot(inkSlab(0.024, 0.42, 0.44), 0, 0, -0.3), 0.5, 0.47, 0.09))
   // Closed eye rides high on the skull so it clears the snout from the steep
   // tycoon camera. It is the whole joke, so it gets the best real estate.
-  const lid = meshOf(new THREE.TorusGeometry(0.11, 0.032, 6, 16, Math.PI), INK)
-  head.add(detail(at(rot(lid, -0.93, 0.36, 0), 0.68, 0.57, 0.25)))
+  const lid = meshOf(new THREE.TorusGeometry(0.12, 0.034, 6, 16, Math.PI), INK)
+  head.add(detail(at(rot(lid, -0.93, 0.36, 0), 0.84, 0.71, 0.28)))
   return head
 }
 
@@ -1102,8 +1210,10 @@ function buildPig() {
   return addOutline(g, { pixels: 4.0, interior: true })
 }
 
-/** Pink pig flopped on its side, big round belly, fast asleep. ~1.9 long.
- *  `userData.restYaw` is the yaw that faces the gag at the camera. */
+/** Pink pig flopped on its side, big round belly, head propped and fast asleep.
+ *  ~2.0 long, ~0.9 to the ear tips. `userData.restYaw` is the yaw that faces
+ *  the gag — snout, closed eye and the near ear — at the camera; placing her at
+ *  any other yaw throws all three away. */
 export function makePig() {
   return withSteps(STEPS.CHARACTER, buildPig)
 }
@@ -1362,7 +1472,69 @@ function blobShape(rnd, r, points = 9, squash = 0.72) {
 }
 
 /**
- * The dark ellipse a cartoon draws under anything resting on the ground.
+ * A painted shadow must never CAST one.
+ *
+ * `detail()` already clears castShadow, but world.js grounds everything it
+ * places by traversing for meshes and switching shadows back on — which turns
+ * every contact decal into an opaque occluder in the depth pass (alpha is not
+ * consulted there), so each prop acquires a second, contradictory shadow-map
+ * shadow shaped like its own painted one. A custom depth material that discards
+ * every fragment is immune to that traversal: `opacity 0 < alphaTest 0.5` fails
+ * three's alphatest_fragment for all pixels, so the decal writes no depth into
+ * any shadow map no matter who flips its flags afterwards.
+ */
+let noCastDepth = null
+
+function neverCasts(mesh) {
+  if (!noCastDepth) {
+    noCastDepth = new THREE.MeshDepthMaterial({
+      depthPacking: THREE.RGBADepthPacking,
+      transparent: true,
+      opacity: 0,
+      alphaTest: 0.5,
+    })
+  }
+  mesh.customDepthMaterial = noCastDepth
+  return mesh
+}
+
+/**
+ * The outline of every painted contact shadow: hand-wobbled, and HARD.
+ *
+ * One shadow language per frame or the picture has none. The cast shadows that
+ * fall out of the shadow map are posterized to a single step (toon.js
+ * useHardShadows) and their edge is the caster's silhouette, so it is a cut
+ * line; a painted decal that answers with a feathered airbrushed alpha is a
+ * second, contradictory system sitting in the same shot. So: no gradient, no
+ * feather, no soft texture — a flat polygon with a drawn edge, whose only
+ * departure from a stamped circle is a seeded wobble, because a shape a hand
+ * put down is never a perfect ellipse.
+ *
+ * Rotation-invariant on purpose. world.js yaws these models arbitrarily, so any
+ * rake toward the sun baked in here would spin with the prop; the direction of
+ * a cast shadow belongs to whoever knows where the sun is.
+ */
+let shadowOutline = null
+
+function shadowShape() {
+  if (shadowOutline) return shadowOutline
+  const rnd = seeded(917)
+  const s = new THREE.Shape()
+  const points = 14
+  for (let i = 0; i < points; i++) {
+    const a = (i / points) * Math.PI * 2
+    const r = 0.86 + rnd() * 0.26
+    const [x, y] = [Math.cos(a) * r, Math.sin(a) * r]
+    if (i === 0) s.moveTo(x, y)
+    else s.lineTo(x, y)
+  }
+  s.closePath()
+  shadowOutline = s
+  return shadowOutline
+}
+
+/**
+ * The dark shape a cartoon draws under anything resting on the ground.
  *
  * A cast shadow map is a lighting effect and it fades out exactly where a prop
  * meets the grass, which is the one place the drawing needs a hard note: with
@@ -1372,11 +1544,12 @@ function blobShape(rnd, r, points = 9, squash = 0.72) {
  */
 function contactShadow(rx, rz = rx, opacity = 0.4) {
   const m = new THREE.Mesh(
-    new THREE.CircleGeometry(1, 18),
+    new THREE.ShapeGeometry(shadowShape(), 1),
     new THREE.MeshBasicMaterial({ color: 0x2e2416, transparent: true, opacity, depthWrite: false })
   )
   m.scale.set(rx, rz, 1)
   m.receiveShadow = false
+  neverCasts(m)
   // Tagged so placement code can find them: a hard contact note belongs under
   // anything in the near and middle field, but on the far treeline it fights
   // atmospheric perspective and world.js may want to fade or drop it.

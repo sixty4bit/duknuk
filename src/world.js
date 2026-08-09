@@ -92,6 +92,20 @@ function enableShadows(object3d) {
   return object3d
 }
 
+/** Critic defect 6: the far converging fence line "reads as a decal sticker
+ * ... it floats a value above the field" once fog recedes it — its stock
+ * material color rendered lighter, post-fog, than the fogged field it stands
+ * in. Darkens each mesh's OWN material color (not a scene-level tint, so
+ * paddock fences elsewhere are untouched) before fog is ever applied, the
+ * same per-instance-material pattern tintCanopy uses on trees. Skips outline
+ * shells (userData.isOutline) so the ink line itself stays full-strength. */
+function darkenMaterials(object3d, factor) {
+  object3d.traverse((o) => {
+    if (o.isMesh && !o.userData.isOutline) o.material.color.multiplyScalar(factor)
+  })
+  return object3d
+}
+
 /** Deterministic wobble so scatter layouts are identical between reloads. */
 function seededRand(seed) {
   let s = seed >>> 0
@@ -149,13 +163,21 @@ function buildGroundTexture() {
   // horizon.
   const blankPx = px * 0.035
   const blankR = px * 0.05
-  const strokeCount = 400
+  // Critic defect 7 (round 2): "a dense field of tiny dark tick marks ...
+  // reads as noise ... as fly specks where it overlaps the bright green
+  // patch." Count halved (400 -> 200) and individual stroke length raised
+  // (was 6-13 world-scaled px, now 10-18) so the same canvas carries fewer,
+  // longer marks — legible drawn blade strokes instead of stipple grain.
+  // applyGrassDetailFade (below) already fades this whole texture to the
+  // blank corner by mid-field; halving density here means what little
+  // remains near-field reads as brushwork rather than noise.
+  const strokeCount = 200
   for (let i = 0; i < strokeCount; i++) {
     const x = rnd() * px
     const y = rnd() * px
     if (Math.hypot(x - blankPx, y - blankPx) < blankR) continue
     const a = rnd() * Math.PI
-    const len = (6 + rnd() * 7) * scale
+    const len = (10 + rnd() * 8) * scale
     ctx.strokeStyle = tones[i % tones.length]
     ctx.lineWidth = (1.6 + rnd() * 1.4) * scale
     ctx.beginPath()
@@ -321,36 +343,41 @@ function drawSilhouetteBand(ctx, w, topY, baseY, color, bumps, amp) {
 /** Five-puff cloud massing — this shape reads fine at any scale; it was only
  * ever the count/size in drawPaintedClouds that fused clouds into a slab.
  * `alpha`/`fill` let a far, hazier rank sit behind the near rank without a
- * second drawing routine. */
+ * second drawing routine.
+ *
+ * Critic defect 1 (this pass): every fill here used to run through
+ * `ctx.globalAlpha` gradients stacked three deep (a soft drop-shadow ellipse
+ * at 0.16, a soft warm underside wash at 0.3, an outline stroked at 0.5 around
+ * EVERY puff so overlapping lobes left visible construction rings) — that is
+ * a painted-with-an-airbrush cloud, not a drawn one. Rebuilt as three flat,
+ * opaque passes with no per-shape alpha falloff: a hard white body, one flat
+ * cool-grey underside shape (lit from above reads as a shadow plane, not a
+ * warm highlight — clouds don't have a warm underside), and a thin ink line
+ * traced only across each puff's TOP arc (the puff's own facing-the-sun
+ * silhouette edge) rather than a full ring, so the mass reads as one
+ * scalloped contour instead of a stack of overlapping outline circles. */
 function drawCloudShape(ctx, cx, cy, s, { alpha = 0.94, fill = '#fffaf2' } = {}) {
-  ctx.globalAlpha = 0.16 * (alpha / 0.94)
-  ctx.fillStyle = '#3b587a'
-  ctx.beginPath()
-  ctx.ellipse(cx, cy + s * 0.18, s * 1.1, s * 0.32, 0, 0, Math.PI * 2)
-  ctx.fill()
+  const puffs = [[0, 0, 1], [0.7, 0.15, 0.65], [-0.7, 0.12, 0.68], [0.25, -0.35, 0.55], [-0.3, -0.3, 0.5]]
   ctx.globalAlpha = alpha
   ctx.fillStyle = fill
-  const puffs = [[0, 0, 1], [0.7, 0.15, 0.65], [-0.7, 0.12, 0.68], [0.25, -0.35, 0.55], [-0.3, -0.3, 0.5]]
   for (const [dx, dy, r] of puffs) {
     ctx.beginPath()
     ctx.ellipse(cx + dx * s, cy + dy * s * 0.6, r * s * 0.75, r * s * 0.42, 0, 0, Math.PI * 2)
     ctx.fill()
   }
-  // Critic defect 5: warm the underside slightly (lit from above, like every
-  // other cast-shadow/highlight pair in this file) and trace a light ink
-  // edge around each lobe so the mass reads as a drawn scalloped silhouette
-  // instead of an airbrushed smudge.
-  ctx.globalAlpha = alpha * 0.3
-  ctx.fillStyle = '#f6c98a'
+  // Flat cool-grey underside — one shape, opaque at this alpha, no gradient.
+  ctx.fillStyle = '#c3cdd6'
   ctx.beginPath()
-  ctx.ellipse(cx, cy + s * 0.3, s * 0.85, s * 0.2, 0, 0, Math.PI * 2)
+  ctx.ellipse(cx, cy + s * 0.3, s * 0.82, s * 0.19, 0, 0, Math.PI * 2)
   ctx.fill()
-  ctx.globalAlpha = alpha * 0.5
-  ctx.strokeStyle = 'rgba(120,96,66,0.6)'
+  ctx.strokeStyle = 'rgba(90,78,68,0.65)'
   ctx.lineWidth = Math.max(1, s * 0.03)
   for (const [dx, dy, r] of puffs) {
     ctx.beginPath()
-    ctx.ellipse(cx + dx * s, cy + dy * s * 0.6, r * s * 0.75, r * s * 0.42, 0, 0, Math.PI * 2)
+    // Top arc only (~200deg sweep centred on straight up) — the puff's lit,
+    // sun-facing silhouette edge. No bottom arc, so the underside shape above
+    // owns the lower boundary and the two never overlap into a full ring.
+    ctx.ellipse(cx + dx * s, cy + dy * s * 0.6, r * s * 0.75, r * s * 0.42, 0, Math.PI * 1.15, Math.PI * 1.95)
     ctx.stroke()
   }
   ctx.globalAlpha = 1
@@ -372,13 +399,14 @@ function drawCloudShape(ctx, cx, cy, s, { alpha = 0.94, fill = '#fffaf2' } = {})
  * than copying these numbers forward blind — that is exactly how this band
  * went stale the first time.
  *
- * Critic defect 1 (this pass): the old 8-puff count (3 far + 4 near + 1 extra)
- * was tuned to compete with the now-deleted 3D buildCloud() meshes for
- * presence; with those gone, this is the sky's ONLY cloud system, and 8
- * puffs packed into two thin elevation bands read as one continuous smear
- * rather than "three to four clouds with clear sky between them." Cut to 2
- * far + 2 near (four total) and the minimum separation widened so each puff
- * reads as its own painted shape.
+ * Critic defect 1 (round 2): the previous pass cut this to 2 far + 2 near
+ * (four total) to stop clouds fusing into a slab — but at four total, with
+ * placement failures from the separation check, real renders were landing
+ * ZERO clouds in the camera's actual sky window: "zero clouds anywhere in
+ * the visible band." Raised to 3 far + 4 near (seven total, within the 5-7
+ * the critic asked for) and the minimum separation tightened (was scale*4.2,
+ * now scale*2.6) so seven puffs can actually all find a slot across one
+ * 1024px-wide band instead of half of them silently failing their 24 tries.
  *
  * A far rank (half scale, greyer, lower alpha) sits behind a near rank (full
  * scale/alpha) so the two ranks read as depth instead of one flat layer. */
@@ -388,7 +416,7 @@ function drawPaintedClouds(ctx, w, h) {
   const place = (scale, cyMin, cyMax, opts) => {
     for (let tries = 0; tries < 24; tries++) {
       const cx = rnd() * w
-      const minSep = scale * 4.2
+      const minSep = scale * 2.6
       const clash = accepted.some((a) => Math.min(Math.abs(a - cx), w - Math.abs(a - cx)) < minSep)
       if (clash) continue
       accepted.push(cx)
@@ -401,17 +429,17 @@ function drawPaintedClouds(ctx, w, h) {
   }
   // Far rank first so the near rank can sit visually in front of it.
   //
-  // Critic defect 5: fill recolored from a cool grey (#d7dbe0 — the "dull
-  // tan-grey smudges ... read as dirt on the lens" next to the good white
-  // cumulus) to the same near-white as the near rank, alpha lifted so the
-  // ink edge and warm underside drawCloudShape now adds still read at this
-  // half scale instead of washing out.
-  for (let i = 0; i < 2; i++) {
-    const nearScale = 18 + rnd() * 16
-    place(nearScale * 0.5, 0.42, 0.462, { alpha: 0.78, fill: '#f7f1e6' })
+  // Critic defect 5 (round 1): fill recolored from a cool grey (#d7dbe0 —
+  // the "dull tan-grey smudges ... read as dirt on the lens" next to the good
+  // white cumulus) to the same near-white as the near rank, alpha lifted so
+  // the ink edge drawCloudShape now adds still reads at this half scale
+  // instead of washing out.
+  for (let i = 0; i < 3; i++) {
+    const nearScale = 16 + rnd() * 14
+    place(nearScale * 0.5, 0.42, 0.462, { alpha: 0.8, fill: '#f7f1e6' })
   }
-  for (let i = 0; i < 2; i++) {
-    place(18 + rnd() * 16, 0.462, 0.495, { alpha: 0.94, fill: '#fffaf2' })
+  for (let i = 0; i < 4; i++) {
+    place(15 + rnd() * 13, 0.462, 0.495, { alpha: 0.94, fill: '#fffaf2' })
   }
 }
 
@@ -424,15 +452,25 @@ function buildSkyTexture() {
   canvas.width = w
   canvas.height = h
   const ctx = canvas.getContext('2d')
-  const zenith = new THREE.Color(0x6fb8de)
+  // Critic defect 1 (round 2): "flat vertical blue-grey ramp ... this is fog
+  // color masquerading as a backdrop" — the old zenith (0x6fb8de) and the old
+  // horizon (FOG_COLOR lifted toward plain white) differed only in VALUE, not
+  // hue, so the gradient read as one grey-blue wash rather than two colours
+  // meeting. Zenith pushed to a more saturated, more blue cyan; horizon lerp
+  // target swapped from white to a warm cream (low blue channel) so the ramp
+  // now carries an actual hue journey — cool saturated blue at the top,
+  // warming through the gradient to a cream horizon — the way a painted sky
+  // backdrop is actually laid in, not just darkened toward the top.
+  const zenith = new THREE.Color(0x4198e0)
   const upperHaze = new THREE.Color(0xffe2ae)
   // The fog, the sky's horizon band and the far-backdrop disc all need to
   // separate by value or they fuse into one grey slab (the critic's "haze
-  // soup"). Sky horizon is now the lightest of the three — lifted toward
-  // white off FOG_COLOR rather than darkened (was *0.88) — with the fog
-  // itself in between and the far-backdrop disc (buildFarBackdropGround)
+  // soup"). Sky horizon is still the lightest of the three — lerped off
+  // FOG_COLOR toward warm cream (0xffdba0, deliberately low-blue so the
+  // channel drops rather than just lightens) rather than toward white — with
+  // the fog itself in between and the far-backdrop disc (buildFarBackdropGround)
   // the darkest, greenest of the three so it reads as pasture, not more sky.
-  const horizon = new THREE.Color(FOG_COLOR).lerp(new THREE.Color(0xffffff), 0.18)
+  const horizon = new THREE.Color(FOG_COLOR).lerp(new THREE.Color(0xffdba0), 0.4)
   const c = new THREE.Color()
   for (let y = 0; y < h; y++) {
     const v = y / h
@@ -485,7 +523,13 @@ function buildSkyTexture() {
   // The near treeline is held, not lifted — nudged a touch darker (L28% ->
   // L26%) so it still reads a full value step (>20 points) below the new
   // mid-ridge value instead of the two nearly touching.
-  drawSilhouetteBand(ctx, w, horizonY - h * 0.015, horizonY - h * 0.001, '#9ca8b5', 5, h * 0.005) // far hill
+  // Critic defect 1 (round 2): "the distant hill sits about one value off the
+  // sky behind it and nearly disappears" — #9ca8b5 sat inside a few percent
+  // value of the NEW warmer horizon band above it once the ramp stopped being
+  // a flat grey wash. Darkened ~18% (exceeds the critic's 12% floor) and
+  // cooled (blue channel held while red/green drop, pushing hue away from the
+  // now-warm horizon) so it reads as a drawn ridge, not a continuation of sky.
+  drawSilhouetteBand(ctx, w, horizonY - h * 0.015, horizonY - h * 0.001, '#7c88a0', 5, h * 0.005) // far hill
   drawSilhouetteBand(ctx, w, horizonY - h * 0.005, horizonY + h * 0.005, '#7c8d8a', 8, h * 0.016) // mid ridge
   drawSilhouetteBand(ctx, w, h * 0.508 - h * 0.013, h * 0.508 + h * 0.006, '#374b3b', 7, h * 0.03) // near treeline
   // Critic defect 3: the near-treeline band's flat fill used to cut straight
@@ -788,21 +832,78 @@ function buildStump() {
   return addOutline(g, { thickness: 0.025 })
 }
 
-function buildFlowerTuft(petalColor) {
+/** Critic defect 5: the purple drift read as "a purple cabbage cluster" —
+ * every instance was a fixed 5-stem radial pattern, the same stamped-clip-art
+ * problem buildCropPatch had. Count, spacing radius, petal size, stem height
+ * and hue (via jitterCanopyColor, the same hue-jitter helper the crop fruit
+ * and the treeline both use) now jitter per instance off a seed, so a drift
+ * of these never repeats the same silhouette twice. */
+function buildFlowerTuft(seed, petalColor) {
+  const rnd = seededRand(seed)
   const g = new THREE.Group()
   const stemMat = toonMaterial(0x4c8a34, { steps: 3 })
-  const petalMat = toonMaterial(petalColor, { steps: 3 })
-  for (let i = 0; i < 5; i++) {
-    const a = (i / 5) * Math.PI * 2
-    const r = 0.08 + (i % 2) * 0.05
-    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.03, 0.22, 5), stemMat)
-    stem.position.set(Math.cos(a) * r, 0.11, Math.sin(a) * r)
+  const petalMat = toonMaterial(jitterCanopyColor(petalColor, (rnd() - 0.5) * 24, 0), { steps: 3 })
+  const count = 4 + Math.floor(rnd() * 4)
+  for (let i = 0; i < count; i++) {
+    const a = (i / count) * Math.PI * 2 + (rnd() - 0.5) * 0.4
+    const r = 0.06 + rnd() * 0.08
+    const stemH = 0.18 + rnd() * 0.08
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.03, stemH, 5), stemMat)
+    stem.position.set(Math.cos(a) * r, stemH / 2, Math.sin(a) * r)
     g.add(stem)
-    const petal = new THREE.Mesh(new THREE.SphereGeometry(0.07, 6, 5), petalMat)
-    petal.position.set(Math.cos(a) * r, 0.24, Math.sin(a) * r)
+    const petal = new THREE.Mesh(new THREE.SphereGeometry(0.055 + rnd() * 0.025, 6, 5), petalMat)
+    petal.position.set(Math.cos(a) * r, stemH + 0.02, Math.sin(a) * r)
     g.add(petal)
   }
   return addOutline(g, { thickness: 0.015 })
+}
+
+/** Critic defect 2: the yard's tan/grass boundary was a bare flat mesh with
+ * no drawn edge — "every other ground element in the frame has a drawn edge;
+ * this one fades." A flat coplanar decal cannot be inked by the inverted-hull
+ * outline (see toon.js), so it needs the same `flat` path the road/pond take:
+ * `addOutline(mesh, { flat: true, pixels: INK_WEIGHT.DECAL })` traces the
+ * polygon's own boundary edge, same weight the road already carries. */
+function buildInkedGroundShape(points, color) {
+  const mesh = buildFlatGroundShape(points, color)
+  addOutline(mesh, { flat: true, pixels: INK_WEIGHT.DECAL })
+  return mesh
+}
+
+/** Critic defect 2: the yard's flat tan fill read as "correct color, empty
+ * interior" — every other ground shape in the frame carries some drawn
+ * incident on top of its base color (the road has ruts, the patch has a
+ * dashed ring). Three flat value shapes, no gradients: a darker trampled arc
+ * at the barn door threshold, a pair of rut fans splaying from the door
+ * toward the road, and a scatter of short straw ticks in lighter cream. */
+function buildYardTrampledArc(cx, cz) {
+  return buildWobblyGroundBlob(cx, cz, 2.6, 0x9c7a48, 8801, 14)
+}
+
+/** Two narrow ribbons fanning from the barn door out toward the cart track —
+ * unlike the road/ruts these carry no ink (they are a value shape worn into
+ * the yard, not an object with an edge) and no obstacle (nothing plays out
+ * here that needs to be blocked). */
+function buildYardRutFans(doorX, doorZ) {
+  const g = new THREE.Group()
+  const targets = [{ x: doorX - 5.5, z: doorZ + 4.5 }, { x: doorX - 8.5, z: doorZ + 1.5 }]
+  for (const t of targets) {
+    const mid = { x: (doorX + t.x) / 2 + (Math.random() - 0.5) * 1.2, z: (doorZ + t.z) / 2 + (Math.random() - 0.5) * 1.2 }
+    g.add(buildPathMesh([{ x: doorX, z: doorZ }, mid, t], 0.7, { color: 0xb08a4e, steps: 2, y: 0.019 }))
+  }
+  return g
+}
+
+/** A single short flat cream tick, standing in for a wisp of loose straw
+ * trodden into the yard. Flat fill, no gradient, no ink — small enough that
+ * an outline hairline would just read as noise at this scale. */
+function buildStrawTick(seed) {
+  const rnd = seededRand(seed)
+  const len = 0.3 + rnd() * 0.3
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(len, 0.01, 0.045), toonMaterial(0xf3e6b8, { steps: 2 }))
+  mesh.position.y = 0.02
+  mesh.rotation.y = rnd() * Math.PI
+  return mesh
 }
 
 function buildTrough() {
@@ -814,6 +915,78 @@ function buildTrough() {
   inner.position.y = 0.36
   g.add(inner)
   return addOutline(g, { thickness: 0.02 })
+}
+
+/** Critic defect 4: the lower-right yard needed incident that isn't a flower
+ * drift or a rock — a stack of feed sacks reads as farm business rather than
+ * decoration. Each sack is a squashed sphere so it bulges like cloth under
+ * its own weight, with a small tied-off cone at the neck; count/size/offset
+ * jitter per instance so the pile isn't a stamped stack of identical bags. */
+function buildFeedSackPile(seed) {
+  const rnd = seededRand(seed)
+  const g = new THREE.Group()
+  const sackMat = toonMaterial(0xc9a468, { steps: 3 })
+  const tieMat = toonMaterial(0x6b4a2a, { steps: 2 })
+  const count = 3 + Math.floor(rnd() * 2)
+  let y = 0
+  for (let i = 0; i < count; i++) {
+    const w = 0.55 + rnd() * 0.15
+    const h = 0.36 + rnd() * 0.1
+    const sack = new THREE.Mesh(new THREE.SphereGeometry(w * 0.5, 8, 6), sackMat)
+    sack.scale.set(1, h / (w * 0.5), 0.85)
+    sack.position.set((rnd() - 0.5) * 0.25, y + h * 0.5, (rnd() - 0.5) * 0.25)
+    sack.rotation.y = rnd() * Math.PI
+    g.add(sack)
+    const tie = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.13, 6), tieMat)
+    tie.position.set(sack.position.x, y + h * 0.95, sack.position.z)
+    g.add(tie)
+    y += h * 0.7
+  }
+  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+}
+
+/** Critic defect 4: a small dozing shape for the yard, curled nose-to-tail so
+ * it reads as asleep rather than a generic quadruped standing still. */
+function buildSleepingCat() {
+  const g = new THREE.Group()
+  const furMat = toonMaterial(0x54545e, { steps: 3 })
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.32, 10, 8), furMat)
+  body.scale.set(1.3, 0.72, 1)
+  body.position.y = 0.22
+  g.add(body)
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.17, 10, 8), furMat)
+  head.position.set(0.35, 0.25, 0.02)
+  g.add(head)
+  for (const s of [-1, 1]) {
+    const ear = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.09, 4), furMat)
+    ear.position.set(0.4, 0.37, s * 0.08)
+    ear.rotation.x = -0.3
+    g.add(ear)
+  }
+  const tail = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.035, 6, 12, Math.PI * 1.3), furMat)
+  tail.rotation.x = Math.PI / 2
+  tail.position.set(-0.2, 0.14, 0)
+  g.add(tail)
+  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+}
+
+/** Critic defect 4: a scattering of flat chicken-track decals across the
+ * lower-right yard — three short toe-slivers fanning from a point, tinted
+ * dark against the tan fill. Decal only, no ink, no obstacle: a footprint is
+ * a mark on the ground, not a thing a chicken paths around. */
+function buildFootprintTrack(seed) {
+  const rnd = seededRand(seed)
+  const g = new THREE.Group()
+  const mat = toonMaterial(0x5a3d22, { steps: 2 })
+  for (let i = 0; i < 3; i++) {
+    const a = -0.5 + i * 0.5 + (rnd() - 0.5) * 0.15
+    const len = 0.09 + rnd() * 0.03
+    const toe = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.008, len), mat)
+    toe.position.set(Math.sin(a) * len * 0.5, 0.017, Math.cos(a) * len * 0.5)
+    toe.rotation.y = a
+    g.add(toe)
+  }
+  return g
 }
 
 // The local buildWheelbarrow() that used to live here is gone: models.js owns
@@ -1030,39 +1203,69 @@ function buildWingFlat(baseHex, rimHex) {
  * than the field so crops read as a distinct hue, not more grass; `withFruit`
  * scatters red-orange fruit notes so one bed reads as a different crop
  * entirely rather than a re-skin of the others. */
-function buildCropPatch(seed = 1, withFruit = false) {
-  const rnd = seededRand(seed)
+function buildCropBed(bedW, bedD) {
   const group = new THREE.Group()
-  const bedW = 4.2
-  const bedD = 3.6
-  const rows = 3
-  const cols = 4
   const bed = new THREE.Mesh(new THREE.BoxGeometry(bedW, 0.08, bedD), toonMaterial(0x6b4a2a, { steps: 3 }))
   bed.position.y = 0.04
   group.add(bed)
   const furrowMat = toonMaterial(0x50331c, { steps: 3 })
+  const rows = 3
   for (let r = 0; r < rows; r++) {
     const furrow = new THREE.Mesh(new THREE.BoxGeometry(bedW * 0.94, 0.02, 0.16), furrowMat)
     furrow.position.set(0, 0.085, r * (bedD / rows) - bedD / 2 + bedD / (rows * 2))
     group.add(furrow)
   }
+  return group
+}
+
+/** One plant: a leaf cone at a jittered height plus, if this bed carries
+ * fruit, a small scatter of berries at a jittered radius/count. Pulled out of
+ * buildCropPatch so the per-plant randomness (critic defect 5) has a single
+ * place to live instead of being buried in a nested loop. */
+function buildCropPlant(rnd, h, leafMat, fruitMat, withFruit) {
+  const group = new THREE.Group()
+  const leaf = new THREE.Mesh(new THREE.ConeGeometry(0.2 + rnd() * 0.06, h, 6), leafMat)
+  leaf.position.y = h / 2 + 0.08
+  group.add(leaf)
+  if (!withFruit) return group
+  const fruitCount = rnd() > 0.25 ? 1 + Math.floor(rnd() * 3) : 0
+  for (let f = 0; f < fruitCount; f++) {
+    const r = 0.06 + rnd() * 0.05
+    const fruit = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 6), fruitMat)
+    fruit.position.set((rnd() - 0.5) * 0.14, h * (0.55 + rnd() * 0.3) + 0.08, (rnd() - 0.5) * 0.14)
+    group.add(fruit)
+  }
+  return group
+}
+
+/** Tilled bed with furrow stripes under staggered, height-varied plants —
+ * reads as agriculture instead of a bare grid of chevrons. Yellower green
+ * than the field so crops read as a distinct hue, not more grass; `withFruit`
+ * scatters red-orange fruit notes so one bed reads as a different crop
+ * entirely rather than a re-skin of the others.
+ *
+ * Critic defect 5: "three identical stamped clusters of red balls on green
+ * stalks ... no variation in size, count, or arrangement." Plant count is
+ * now random per cluster (3-7, not a fixed rows*cols=12 grid), each cluster
+ * carries its own height scale on top of per-plant jitter, fruit count/
+ * radius vary per plant instead of one fixed-size berry on a coin flip, and
+ * the fruit hue itself shifts +/-10deg per cluster (reusing
+ * jitterCanopyColor, the same hue-jitter helper the treeline uses) so no two
+ * clusters share a silhouette even at neighbouring seeds. */
+function buildCropPatch(seed = 1, withFruit = false) {
+  const rnd = seededRand(seed)
+  const bedW = 4.2
+  const bedD = 3.6
+  const group = buildCropBed(bedW, bedD)
   const leafMat = toonMaterial(0x8fbb3a, { steps: 3 })
-  const fruitMat = toonMaterial(0xe0532a, { steps: 3 })
-  for (let r = 0; r < rows; r++) {
-    for (let cIdx = 0; cIdx < cols; cIdx++) {
-      const h = 0.85 + rnd() * 0.35
-      const jitter = (rnd() - 0.5) * 0.18
-      const px = (cIdx * bedW * 0.85) / (cols - 1) - (bedW * 0.85) / 2 + jitter
-      const pz = r * (bedD / rows) - bedD / 2 + bedD / (rows * 2) + jitter
-      const leaf = new THREE.Mesh(new THREE.ConeGeometry(0.22, h, 6), leafMat)
-      leaf.position.set(px, h / 2 + 0.08, pz)
-      group.add(leaf)
-      if (withFruit && rnd() > 0.45) {
-        const fruit = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), fruitMat)
-        fruit.position.set(px, h * 0.7 + 0.08, pz)
-        group.add(fruit)
-      }
-    }
+  const fruitMat = toonMaterial(jitterCanopyColor(0xe0532a, (rnd() - 0.5) * 20, 0), { steps: 3 })
+  const plantCount = 3 + Math.floor(rnd() * 5)
+  const heightScale = 0.75 + rnd() * 0.5
+  for (let i = 0; i < plantCount; i++) {
+    const h = (0.7 + rnd() * 0.3) * heightScale
+    const plant = buildCropPlant(rnd, h, leafMat, fruitMat, withFruit)
+    plant.position.set((rnd() - 0.5) * bedW * 0.82, 0, (rnd() - 0.5) * bedD * 0.82)
+    group.add(plant)
   }
   return addOutline(group, { thickness: 0.025 })
 }
@@ -1073,24 +1276,44 @@ function buildCropPatch(seed = 1, withFruit = false) {
  * of color read as "edge of water" rather than the water having no edge at
  * all. Reused INK_WEIGHT.PROP (same weight buildGrassTuft takes) rather than
  * DECAL — these are small vertical props standing IN the scene, not a ground
- * decal like the pond's own water surface. */
+ * decal like the pond's own water surface.
+ *
+ * Critic defect 3 (round 2): the old blade was a straight CylinderGeometry
+ * (top radius 0.035, not near zero) standing dead vertical with a separate
+ * flat-capped brown cone stacked on top — "four fat dark-brown wooden posts
+ * with chamfered rectangular tops ... an unmistakable broken fence." Rebuilt
+ * on three changes: (1) each blade is its own leaning GROUP, pivoted at the
+ * base, so a cattail head placed at local top-of-blade leans WITH the blade
+ * instead of being computed separately; (2) the blade itself is a
+ * ConeGeometry (true zero-radius tip, no cap) tapering to nothing, not a
+ * cylinder with a cap glued on; (3) nothing brown — blades are a green darker
+ * than the lawn (0x3f6b28 vs the field's 0x7ec852-family), and only the
+ * cattail heads (a third of the count, not every blade) carry a dark maroon
+ * tone, as a capsule, not a flat-topped cone. */
 function buildReedTuft(seed) {
   const rnd = seededRand(seed)
   const g = new THREE.Group()
-  const bladeMat = toonMaterial(0x6f8a3a, { steps: 3 })
-  const tipMat = toonMaterial(0x8a6a3a, { steps: 2 })
-  const count = 3 + Math.floor(rnd() * 2)
+  const bladeMat = toonMaterial(0x3f6b28, { steps: 3 })
+  const cattailMat = toonMaterial(0x5a3421, { steps: 2 })
+  const count = 6 + Math.floor(rnd() * 4) // 6-9
   for (let i = 0; i < count; i++) {
     const a = rnd() * Math.PI * 2
-    const r = rnd() * 0.12
-    const h = 0.6 + rnd() * 0.5
-    const blade = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.035, h, 5), bladeMat)
-    blade.position.set(Math.cos(a) * r, h / 2, Math.sin(a) * r)
-    blade.rotation.set((rnd() - 0.5) * 0.3, 0, (rnd() - 0.5) * 0.3)
-    g.add(blade)
-    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.16, 5), tipMat)
-    tip.position.set(Math.cos(a) * r, h + 0.06, Math.sin(a) * r)
-    g.add(tip)
+    const r = rnd() * 0.14
+    const h = 0.55 + rnd() * 0.55
+    const lean = THREE.MathUtils.degToRad(10 + rnd() * 15)
+    const leanDir = rnd() * Math.PI * 2
+    const reed = new THREE.Group()
+    const blade = new THREE.Mesh(new THREE.ConeGeometry(0.045, h, 5), bladeMat)
+    blade.position.y = h / 2
+    reed.add(blade)
+    if (i < 3 && rnd() > 0.4) {
+      const head = new THREE.Mesh(new THREE.CapsuleGeometry(0.045, 0.16, 3, 6), cattailMat)
+      head.position.y = h * 0.9
+      reed.add(head)
+    }
+    reed.position.set(Math.cos(a) * r, 0, Math.sin(a) * r)
+    reed.rotation.set(Math.cos(leanDir) * lean, 0, Math.sin(leanDir) * lean)
+    g.add(reed)
   }
   return addOutline(g, { pixels: INK_WEIGHT.PROP })
 }
@@ -1108,14 +1331,39 @@ function buildReedTuft(seed) {
  * CircleGeometry) muddy shoreline disc sits under the water so the pond's
  * overall silhouette is an irregular shore, not a geometric ellipse; (3) a
  * handful of reed tufts break the shoreline on the near (camera-facing) arc. */
-function buildPond(radius) {
-  const g = new THREE.Group()
+/** Critic defect 3 (round 2): "an aliased edge where it simply stops against
+ * the grass — it reads as spilled paint or a hole in the lawn." The mud
+ * shoreline disc existed but carried no ink of its own, so its own boundary
+ * against the grass was the same soft-value-only edge the critic flagged on
+ * the water. Given the water's own DECAL-weight ink boundary. */
+function buildPondBank(radius) {
   const mudGeo = buildWobbledDiscGeometry(radius * 1.24, 24, 0.16)
   mudGeo.rotateX(-Math.PI / 2)
   const mud = new THREE.Mesh(mudGeo, toonMaterial(0x6b4a2a, { steps: 2 }))
   mud.position.y = 0.022
   mud.receiveShadow = true
-  g.add(mud)
+  addOutline(mud, { flat: true, pixels: INK_WEIGHT.DECAL })
+  return mud
+}
+
+/** Critic defect 3 (round 2): the old highlight was a single lighter-cyan
+ * disc concentric with the pond — "three horizontal darker cyan ripple
+ * bands ... reads as spilled paint." Cartoon water is a flat color with a
+ * couple of white sickle marks, not banded ripples. Each sliver is a
+ * squashed, tilted ellipse — short, flat, opaque, no gradient — scattered
+ * off-center so they read as brush marks rather than a repeated ring. */
+function buildWaterHighlightSliver(len, thickness, rotY) {
+  const geo = new THREE.CircleGeometry(1, 10)
+  geo.rotateX(-Math.PI / 2)
+  const mesh = new THREE.Mesh(geo, toonMaterial(0xeaf8fb, { steps: 2 }))
+  mesh.scale.set(len, 1, thickness)
+  mesh.rotation.y = rotY
+  return mesh
+}
+
+function buildPond(radius) {
+  const g = new THREE.Group()
+  g.add(buildPondBank(radius))
 
   const waterGeo = buildWobbledDiscGeometry(radius, 24, 0.08)
   waterGeo.rotateX(-Math.PI / 2)
@@ -1124,17 +1372,24 @@ function buildPond(radius) {
   addOutline(water, { flat: true, pixels: INK_WEIGHT.DECAL })
   g.add(water)
 
-  const highlight = new THREE.Mesh(new THREE.CircleGeometry(radius * 0.5, 22), toonMaterial(0x7ecbe8, { steps: 2 }))
-  highlight.rotation.x = -Math.PI / 2
-  highlight.position.set(radius * 0.18, 0.045, -radius * 0.12)
-  g.add(highlight)
+  const rnd = seededRand(3390)
+  const slivers = [
+    { x: radius * 0.18, z: -radius * 0.3, len: radius * 0.32, rot: 0.4 },
+    { x: -radius * 0.3, z: -radius * 0.05, len: radius * 0.24, rot: -0.5 },
+    { x: radius * 0.35, z: radius * 0.35, len: radius * 0.2, rot: 0.9 },
+  ]
+  for (const s of slivers) {
+    const sliver = buildWaterHighlightSliver(s.len, s.len * 0.16, s.rot + rnd() * 0.2)
+    sliver.position.set(s.x, 0.046, s.z)
+    g.add(sliver)
+  }
 
   // Reed tufts on the near (camera-facing, +z-ish) arc of the shoreline only
   // — reeds ringing the whole pond would read as a hedge, not a shore detail.
-  const rnd = seededRand(3301)
+  const reedRnd = seededRand(3301)
   for (let i = 0; i < 4; i++) {
-    const a = Math.PI * 0.1 + rnd() * Math.PI * 0.55
-    const rr = radius * (0.92 + rnd() * 0.22)
+    const a = Math.PI * 0.1 + reedRnd() * Math.PI * 0.55
+    const rr = radius * (0.92 + reedRnd() * 0.22)
     const tuft = buildReedTuft(3302 + i)
     tuft.position.set(Math.cos(a) * rr, 0, Math.sin(a) * rr)
     g.add(tuft)
@@ -1289,12 +1544,40 @@ export class World {
     // a value one) and lifted further in value so the gap to the field bands
     // it sits against (L~49-58%) is comfortably more than two of
     // FIELD_BANDS' own ~10%-value steps.
+    //
+    // Critic defect 2 (round 2): "the grass-to-tan-yard boundary is an
+    // airbrushed blur" — this mesh's silhouette had no ink at all, the one
+    // ground shape in the frame without a drawn edge. Now built through
+    // buildInkedGroundShape, which runs the boundary through addOutline's
+    // flat path at INK_WEIGHT.DECAL — the same weight the road takes — so
+    // cel grounds meet edge to edge instead of fading.
     this.scene.add(
-      buildFlatGroundShape(
+      buildInkedGroundShape(
         [{ x: -4, z: 8 }, { x: 10, z: 6 }, { x: 14, z: -6 }, { x: 2, z: -10 }, { x: -6, z: -4 }],
         0xf3ce85
       )
     )
+    this._placeYardInteriorDetail()
+  }
+
+  /** Critic defect 2 (round 2): "the tan color is correct ... only the edge
+   * and the empty interior are wrong." Three flat value shapes on top of the
+   * yard fill, none of them a gradient: a trampled arc where the barn door
+   * traffic wears the ground darker, a pair of rut fans splaying from that
+   * door toward the cart track, and a scatter of straw ticks across the rest
+   * of the open yard. doorX/doorZ approximate the barn's real doorway (barn
+   * at 11,-14, door wall z ~ -9.98) shifted a step into the yard itself. */
+  _placeYardInteriorDetail() {
+    const doorX = 10
+    const doorZ = -8.6
+    this.scene.add(buildYardTrampledArc(doorX, doorZ))
+    this.scene.add(buildYardRutFans(doorX, doorZ))
+    const rnd = seededRand(8802)
+    for (let i = 0; i < 10; i++) {
+      const tick = buildStrawTick(8803 + i)
+      tick.position.set(-3 + rnd() * 14, 0, -7 + rnd() * 12)
+      this.scene.add(tick)
+    }
   }
 
   _addToScene(mesh, x, z, rotY = 0) {
@@ -1313,6 +1596,26 @@ export class World {
     shadow.position.set(x + ox, 0.015, z + oz)
     this.scene.add(shadow)
     return shadow
+  }
+
+  /** Critic defect 6: the standard contact shadow (`_addContactShadow`) uses
+   * `fog: true` (see buildContactShadow) so it recedes in step with the
+   * ground it sits on — correct for anything near camera, but at the far
+   * converging fence line's depth (z -40..-70, inside scene.fog's 55-260
+   * range) it fades toward invisible right along with the post, leaving "no
+   * visible ground contact." This sliver is deliberately NOT fogged: a
+   * small, flat, opaque dark mark at the post base that stays legible
+   * regardless of depth — "even a thin dark sliver," per the fix. */
+  _addGroundContactSliver(x, z) {
+    const geo = new THREE.CircleGeometry(1, 8)
+    geo.rotateX(-Math.PI / 2)
+    const mat = new THREE.MeshBasicMaterial({ color: 0x2a1c10, transparent: true, opacity: 0.4, depthWrite: false, fog: false })
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.scale.set(0.32, 1, 0.14)
+    mesh.rotation.y = SHADOW_ANGLE
+    mesh.position.set(x, 0.017, z)
+    mesh.renderOrder = 1
+    this.scene.add(mesh)
   }
 
   /** Staged prop: in the scene, grounded by a painted contact shadow, but NOT
@@ -1339,8 +1642,15 @@ export class World {
    * "zero incident" gaps in that dead band. Each post along the run now gets
    * the same painted contact shadow every other obstacle gets, reusing the
    * same post-spacing loop that already builds the walkability circles. */
-  _placeFenceLine(length, x, z, rotY) {
-    this._addToScene(makeFence(length), x, z, rotY)
+  /** Critic defect 6: `far` (only set by _placeConvergingFenceLine) darkens
+   * the fence's own material so its pre-fog value survives the fog blend
+   * instead of floating lighter than the field it stands in, and adds a
+   * ground-contact sliver at each post that doesn't fade with the standard
+   * fogged contact shadow — see darkenMaterials / _addGroundContactSliver. */
+  _placeFenceLine(length, x, z, rotY, { far = false } = {}) {
+    const fence = makeFence(length)
+    if (far) darkenMaterials(fence, 0.72)
+    this._addToScene(fence, x, z, rotY)
     // a straight fence isn't one blocking circle: approximate it with a
     // string of post-sized circles along its run so isWalkable stays honest.
     const steps = Math.max(2, Math.round(length / 3))
@@ -1350,6 +1660,7 @@ export class World {
       const pz = z - Math.sin(rotY) * t
       this.addObstacle(px, pz, 0.55)
       this._addContactShadow(px, pz, 0.4)
+      if (far) this._addGroundContactSliver(px, pz)
     }
   }
 
@@ -1399,6 +1710,50 @@ export class World {
     this._placeTrees()
     this._placeLandmarks()
     this._placeMidDistanceBackdrop()
+    // Last, so its scatter/collision checks (_findScatterSpot) see every
+    // obstacle already on the board — haystack row, silo, grove — and never
+    // drop a hen or a laundry pole inside one of them.
+    this._placeMidLeftFieldLife()
+  }
+
+  /** Critic defect 4: "the green mid-left field between the treeline and the
+   * coop ... nothing to look at" — roughly the depth band between the near
+   * grove (z -11..-17) and the mid-distance backdrop (z -34 and beyond) held
+   * only ground texture. A second laundry line (the one in _placeCoopYard
+   * sits right at the coop door; this one gives the open field its own
+   * incident), a scarecrow at mid-distance, a couple of background hens
+   * grazing loose (decor only — not assigned to any patch), and two extra
+   * broad flat value masses at a lower spatial frequency than the field's
+   * own vertex-color bands, so even the untenanted grass carries drawn
+   * shapes to travel across. */
+  _placeMidLeftFieldLife() {
+    this.scene.add(buildWobblyGroundBlob(-24, -26, 9, 0x577e3c, 6201))
+    this.scene.add(buildWobblyGroundBlob(-13, -30, 8, 0x6f9448, 6202))
+    this._placeFieldLaundryLine()
+    this._place(makeScarecrow(6210), -22, -22, 0.6, 1.1)
+    const rnd = seededRand(6220)
+    for (let i = 0; i < 3; i++) {
+      const spot = this._findScatterSpot(-24, -24, 10)
+      if (!spot) continue
+      this._placeDecor(makePeckingHen(6221 + i), spot.x, spot.z, 0.35, rnd() * Math.PI * 2)
+    }
+  }
+
+  /** Same measure-then-place pattern _placeLaundryLine uses at the coop — a
+   * hardcoded half-span would put the blocking circles somewhere the poles
+   * aren't the moment the prop is restyled. */
+  _placeFieldLaundryLine() {
+    const [cx, cz, rotY] = [-19, -24, 0.5]
+    const line = makeLaundryLine(6230)
+    const size = new THREE.Box3().setFromObject(line).getSize(new THREE.Vector3())
+    const halfRun = Math.max(0.5, Math.max(size.x, size.z) / 2 - 0.3)
+    this._addToScene(line, cx, cz, rotY)
+    for (const s of [-1, 1]) {
+      const px = cx + Math.cos(rotY) * halfRun * s
+      const pz = cz - Math.sin(rotY) * halfRun * s
+      this._addContactShadow(px, pz, 0.45)
+      this.addObstacle(px, pz, 0.45)
+    }
   }
 
   /** Vertical accents near the horizon band that break up the composition's
@@ -1482,7 +1837,7 @@ export class World {
       // _addToScene's rotation.y) lines up with this segment's own direction
       // — matches the convention _placeFenceLine's obstacle-stepping already
       // assumes.
-      this._placeFenceLine(len, (x0 + x1) / 2, (z0 + z1) / 2, Math.atan2(-dz, dx))
+      this._placeFenceLine(len, (x0 + x1) / 2, (z0 + z1) / 2, Math.atan2(-dz, dx), { far: true })
     }
   }
 
@@ -1648,6 +2003,25 @@ export class World {
     this._placeDecorAnimals()
     this._placeBarnYard()
     this._placeFencePerches()
+    this._placeYardLife()
+  }
+
+  /** Critic defect 4: "the lower-right expanse of tan yard ... nothing to
+   * look at" — a feed sack pile, a cat dozing by the trough (_placeBarnYard
+   * puts the trough at 9.3,-2.9), and a trodden trail of chicken-track
+   * decals. Paired with _placeYardInteriorDetail's trampled arc/ruts/straw,
+   * this is the yard's half of the fix; _placeMidLeftFieldLife is the
+   * field's. */
+  _placeYardLife() {
+    this._place(buildFeedSackPile(6301), 13, -1.5, 0.6, 0.6)
+    this._placeDecor(buildSleepingCat(), 10.9, -1.9, 0.35, 2.3)
+    const rnd = seededRand(6310)
+    for (let i = 0; i < 8; i++) {
+      const track = buildFootprintTrack(6311 + i)
+      track.position.set(6 + rnd() * 8, 0, -1 + rnd() * 8)
+      track.rotation.y = rnd() * Math.PI * 2
+      this.scene.add(track)
+    }
   }
 
   /** Critic defect 1: hero hen, both pecking hens and the sleeping pig were
@@ -1786,11 +2160,12 @@ export class World {
       { x: -0.5, z: -5.5, spread: 5, count: 6, color: 0xe6483c },
       { x: 9, z: 5, spread: 5, count: 6, color: 0xc060d6 },
     ]
+    let seed = 7100
     for (const d of drifts) {
       for (let n = 0; n < d.count; n++) {
         const spot = this._findScatterSpot(d.x, d.z, d.spread)
         if (!spot) continue
-        const tuft = buildFlowerTuft(d.color)
+        const tuft = buildFlowerTuft(seed++, d.color)
         tuft.scale.setScalar(3)
         this._addToScene(tuft, spot.x, spot.z, Math.random() * Math.PI * 2)
       }

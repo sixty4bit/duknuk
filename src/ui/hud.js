@@ -44,7 +44,10 @@ const STYLE_CSS = `
      so this chip reads as a hand-lettered title-card piece, not a modern
      app chip: 2.5px ink border in the shared INK color (matches the world's
      ink, not its hero-outline thickness), hard 4px offset shadow with zero
-     blur — no soft drop-shadow, that's what dates a chip to modern mobile UI. */
+     blur — no soft drop-shadow, that's what dates a chip to modern mobile UI.
+     border-radius is four uneven corners (not .duk-panel's uniform 16px) so
+     the outline reads as hand-cut card stock, same vocabulary as the hint
+     balloon's tail-and-badge asymmetry, instead of a machined rounded rect. */
   position: fixed; top: 16px; right: 16px;
   display: flex; align-items: center; gap: 10px;
   padding: 8px 8px 8px 18px;
@@ -52,14 +55,20 @@ const STYLE_CSS = `
   transform: rotate(1deg);
   animation: duk-squash-in 0.4s ease-out;
   border-width: 2.5px;
+  border-radius: 19px 14px 22px 11px;
   box-shadow: 4px 4px 0 var(--duk-ink);
 }
 .duk-coin {
-  width: 40px; height: 40px; border-radius: 50%;
-  background: #ffd94a; border: 4px solid var(--duk-ink);
+  /* wobbly, hand-inked contour (mismatched radii, not a true circle) plus a
+     flat two-tone fill split with a hard edge — no gradient, no soft inset
+     shading — so the coin reads as a cel-shaded prop instead of a smooth
+     mobile-game token. */
+  width: 40px; height: 40px;
+  border-radius: 48% 52% 53% 47% / 52% 47% 53% 48%;
+  background: linear-gradient(180deg, #ffe27a 0 50%, #f0a92e 50% 100%);
+  border: 4px solid var(--duk-ink);
   display: flex; align-items: center; justify-content: center;
   font-size: 22px; line-height: 1; flex: none;
-  box-shadow: inset 0 -3px 0 rgba(0,0,0,0.15);
   font-family: 'Arial Black', Impact, 'Anton', 'Arial Narrow Bold', Haettenschweiler, sans-serif;
 }
 .duk-coin.duk-bounce { animation: duk-coin-bounce 0.45s ease-out; }
