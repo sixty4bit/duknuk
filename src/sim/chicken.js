@@ -3,7 +3,7 @@ import { makeChicken, makeEgg } from '../art/models.js'
 import { findPath } from './pathfind.js'
 import * as audio from '../audio.js'
 
-const WALK_SPEED = 1.6
+const WALK_SPEED = 2.3
 const SAD_SPEED = 0.5
 const ARRIVE_EPS = 0.12
 const TURN_RATE = 6 // rad/s
@@ -78,7 +78,9 @@ export class Chicken {
     this._baseWingRRotZ = p.wingR.rotation.z
     this._baseBodyScale = p.body.scale.clone()
     this._baseGroupScale = this.mesh.scale.clone()
-    this._bubbleBaseY = (p.head.position.y ?? 0.7) + 1.0
+    // parts live inside the 1.8x-scaled inner rig; the bubble hangs off the
+    // unscaled root, so clear the comb (~1.85 world units) explicitly
+    this._bubbleBaseY = 2.35
   }
 
   assignPatch(patch) {

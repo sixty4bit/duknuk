@@ -9,6 +9,18 @@ const BARN_RED = '#c8352b'
 
 const STYLE_CSS = `
 #hud { --duk-ink: ${INK}; --duk-cream: ${CREAM}; --duk-red: ${BARN_RED}; }
+.duk-vignette {
+  position: fixed; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(ellipse 75% 70% at 50% 46%,
+      rgba(26, 18, 8, 0) 45%,
+      rgba(26, 18, 8, 0.16) 72%,
+      rgba(48, 30, 12, 0.5) 100%),
+    linear-gradient(to bottom,
+      rgba(26, 18, 8, 0.28) 0%, rgba(26, 18, 8, 0) 14%,
+      rgba(26, 18, 8, 0) 82%, rgba(26, 18, 8, 0.3) 100%);
+  mix-blend-mode: multiply;
+}
 .duk-panel {
   background: var(--duk-cream);
   border: 4px solid var(--duk-ink);
@@ -36,12 +48,57 @@ const STYLE_CSS = `
 .duk-money-amount { font-size: 26px; letter-spacing: 0.5px; }
 .duk-money-amount.duk-bounce { animation: duk-text-bounce 0.35s ease-out; }
 .duk-hint {
-  position: fixed; bottom: 22px; left: 50%;
+  position: fixed; bottom: 30px; left: 50%;
   transform: translateX(-50%) rotate(0.6deg);
-  padding: 8px 20px; font-size: 15px; text-align: center;
+  padding: 10px 22px 10px 46px; font-size: 15px; text-align: center;
   max-width: 70vw;
   animation: duk-pop-in 0.35s ease-out;
 }
+.duk-hint::before {
+  /* speech-bubble tail, ink outline */
+  content: '';
+  position: absolute; bottom: -15px; left: 40px;
+  width: 0; height: 0;
+  border-left: 11px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 17px solid var(--duk-ink);
+}
+.duk-hint::after {
+  /* tail cream fill, inset over the ink triangle */
+  content: '';
+  position: absolute; bottom: -10px; left: 43px;
+  width: 0; height: 0;
+  border-left: 8px solid transparent;
+  border-right: 3px solid transparent;
+  border-top: 12px solid var(--duk-cream);
+}
+.duk-hint-portrait {
+  position: absolute; top: -12px; left: 10px;
+  width: 34px; height: 34px; border-radius: 50%;
+  background: #fff8ea; border: 3px solid var(--duk-ink);
+  box-shadow: 2px 2px 0 var(--duk-ink);
+  transform: rotate(-6deg);
+}
+.duk-hint-portrait::before {
+  /* comb */
+  content: '';
+  position: absolute; top: -6px; left: 50%;
+  transform: translateX(-50%);
+  width: 12px; height: 8px;
+  background: var(--duk-red); border: 2px solid var(--duk-ink);
+  border-radius: 50% 50% 4px 4px;
+}
+.duk-hint-portrait::after {
+  /* beak */
+  content: '';
+  position: absolute; bottom: 3px; left: 50%;
+  transform: translateX(-50%);
+  width: 0; height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid #ffb238;
+}
+.duk-hint-text { position: relative; }
 .duk-toasts {
   position: fixed; top: 16px; right: 16px; z-index: 10;
   display: flex; flex-direction: column; gap: 10px; align-items: flex-end;
@@ -123,9 +180,16 @@ export class HUD {
     this._moneyValue = 0
     this._patchHideTimer = null
     this._tickRaf = null
+    this._buildVignette()
     this._buildMoney()
     this._buildHint()
     this._buildToastLayer()
+  }
+
+  _buildVignette() {
+    const vignette = document.createElement('div')
+    vignette.className = 'duk-vignette'
+    this.root.appendChild(vignette)
   }
 
   _buildMoney() {
@@ -143,8 +207,12 @@ export class HUD {
   _buildHint() {
     this.hintEl = document.createElement('div')
     this.hintEl.className = 'duk-hint duk-panel'
-    this.hintEl.textContent = 'Click the grass to plant a patch for your chicken'
+    this.hintEl.innerHTML = `
+      <div class="duk-hint-portrait"></div>
+      <span class="duk-hint-text">Click the grass to plant a patch for your chicken</span>
+    `
     this.root.appendChild(this.hintEl)
+    this.hintTextEl = this.hintEl.querySelector('.duk-hint-text')
   }
 
   _buildToastLayer() {
@@ -228,6 +296,6 @@ export class HUD {
   }
 
   setHint(text) {
-    this.hintEl.textContent = text
+    this.hintTextEl.textContent = text
   }
 }

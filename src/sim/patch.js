@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { toonMaterial } from '../art/toon.js'
 
 // Tunable: seconds for a fully-bare cell to regrow to fully-lush.
 export const REGROW_SECONDS = 90
@@ -11,10 +12,16 @@ const PIXELS_PER_CELL = 16
 const MAX_CANVAS = 512
 const RENDER_Y = 0.03
 const RING_COLOR = 0x2c4a1e
+const RING_THICKNESS = 0.12
+// Gaussian blur radius (in canvas px) applied over the raw cell fill so cell
+// boundaries feather instead of stair-stepping.
+const FEATHER_PX = 1.5
 
-const LUSH = new THREE.Color('#79c850')
-const THIN = new THREE.Color('#d8c84a')
-const BARE = new THREE.Color('#8a6a42')
+// Lush must be the darkest, richest note in the frame (grazed-vs-fresh reads
+// backwards otherwise) — deep saturated emerald down to dry umber.
+const LUSH = new THREE.Color('#3f8f2a')
+const THIN = new THREE.Color('#d8b23a')
+const BARE = new THREE.Color('#7a5433')
 
 function foodColor(t, target = new THREE.Color()) {
   if (t >= 0.5) return target.copy(THIN).lerp(LUSH, (t - 0.5) * 2)
@@ -22,16 +29,46 @@ function foodColor(t, target = new THREE.Color()) {
 }
 
 // A stable (non-random) wobble so the ring reads as hand-drawn but never
-// re-jitters between rebuilds.
-function buildRingGeometry(radius, segments = 72) {
-  const pts = []
+// re-jitters between rebuilds. Returns a flat ribbon (triangle strip) instead
+// of a single-pixel line so it can carry real ink weight.
+function buildRingGeometry(radius, thickness, segments = 72) {
+  const centers = []
   for (let s = 0; s <= segments; s++) {
     const t = (s / segments) * Math.PI * 2
     const wobble = 1 + 0.05 * Math.sin(t * 5 + 1.3) + 0.025 * Math.sin(t * 11 + 0.6)
     const r = radius * wobble
-    pts.push(new THREE.Vector3(Math.cos(t) * r, 0, Math.sin(t) * r))
+    centers.push([Math.cos(t) * r, Math.sin(t) * r])
   }
-  return new THREE.BufferGeometry().setFromPoints(pts)
+  const half = thickness / 2
+  const positions = []
+  for (let s = 0; s <= segments; s++) {
+    const [cx, cz] = centers[s]
+    const [px, pz] = centers[(s - 1 + segments) % segments]
+    const [nx, nz] = centers[(s + 1) % segments]
+    let tx = nx - px
+    let tz = nz - pz
+    const tl = Math.hypot(tx, tz) || 1
+    tx /= tl
+    tz /= tl
+    // outward normal = tangent rotated 90°, in the XZ plane
+    const ox = -tz
+    const oz = tx
+    positions.push(cx + ox * half, 0, cz + oz * half)
+    positions.push(cx - ox * half, 0, cz - oz * half)
+  }
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  const index = []
+  for (let s = 0; s < segments; s++) {
+    const a = s * 2
+    const b = a + 1
+    const c = a + 2
+    const d = a + 3
+    index.push(a, b, c, b, d, c)
+  }
+  geo.setIndex(index)
+  geo.computeVertexNormals()
+  return geo
 }
 
 export class Patch {
@@ -77,10 +114,20 @@ export class Patch {
     canvas.height = size
     this._canvas = canvas
     this._ctx = canvas.getContext('2d')
+    // Raw (un-feathered) fill lives on a separate canvas; the visible texture
+    // is a blurred copy of it so cell boundaries feather, not stair-step.
+    const raw = document.createElement('canvas')
+    raw.width = size
+    raw.height = size
+    this._rawCanvas = raw
+    this._rawCtx = raw.getContext('2d')
     this._texture = new THREE.CanvasTexture(canvas)
 
+    // Same shading path as the ground beneath it (toon-lit, not unlit) so
+    // "lush" and "grazed" land the same value/saturation logic as the field.
     const geo = new THREE.CircleGeometry(this.radius, 48)
-    const mat = new THREE.MeshBasicMaterial({
+    const mat = toonMaterial(0xffffff, {
+      steps: 3,
       map: this._texture,
       transparent: true,
       polygonOffset: true,
@@ -92,10 +139,9 @@ export class Patch {
     this._discMesh.renderOrder = 5
     this.group.add(this._discMesh)
 
-    const ringMat = new THREE.LineDashedMaterial({ color: RING_COLOR, dashSize: 0.4, gapSize: 0.28 })
-    this._ringMesh = new THREE.Line(buildRingGeometry(this.radius), ringMat)
+    const ringMat = new THREE.MeshBasicMaterial({ color: RING_COLOR, side: THREE.DoubleSide })
+    this._ringMesh = new THREE.Mesh(buildRingGeometry(this.radius, RING_THICKNESS), ringMat)
     this._ringMesh.position.y = 0.015
-    this._ringMesh.computeLineDistances()
     this._ringMesh.renderOrder = 6
     this.group.add(this._ringMesh)
   }
@@ -136,11 +182,18 @@ export class Patch {
   }
 
   _redrawTexture() {
-    const ctx = this._ctx
+    this._paintRawFill()
+    this._featherFillToTexture()
+    this._texture.needsUpdate = true
+  }
+
+  // Hard-edged per-cell fill onto the offscreen raw canvas.
+  _paintRawFill() {
+    const ctx = this._rawCtx
     const cols = this._cols
     const px = this._pxPerCell
     const scratch = new THREE.Color()
-    ctx.clearRect(0, 0, this._canvas.width, this._canvas.height)
+    ctx.clearRect(0, 0, this._rawCanvas.width, this._rawCanvas.height)
     for (let j = 0; j < cols; j++) {
       for (let i = 0; i < cols; i++) {
         const f = this._food[j * cols + i]
@@ -150,7 +203,17 @@ export class Patch {
         ctx.fillRect(i * px, j * px, px + 1, px + 1)
       }
     }
-    this._texture.needsUpdate = true
+  }
+
+  // Blurs the raw fill onto the visible texture so cell boundaries feather
+  // into each other instead of reading as a hard, stair-stepped alpha mask.
+  _featherFillToTexture() {
+    const ctx = this._ctx
+    ctx.clearRect(0, 0, this._canvas.width, this._canvas.height)
+    ctx.save()
+    ctx.filter = `blur(${FEATHER_PX}px)`
+    ctx.drawImage(this._rawCanvas, 0, 0)
+    ctx.restore()
   }
 
   // Redraws only if a cell's quantized food level actually changed — keeps

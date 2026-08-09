@@ -7,8 +7,10 @@ import { toonMaterial, addOutline } from './toon.js'
 
 const INK = 0x1a1208
 const P = {
-  hen: 0xfffaf0,
-  henShade: 0xefdfbe,
+  // Warm cream, not paper white: the hen has to sit *below* the sky and the
+  // barn trim in value, or she has no silhouette weight on bright grass.
+  hen: 0xf7e9cc,
+  henShade: 0xd6a24e,
   comb: 0xe03a2c,
   beak: 0xf5a623,
   shell: 0xfdf3da,
@@ -31,8 +33,26 @@ const P = {
 
 // ---------------------------------------------------------------- primitives
 
+// Ramp steps for the shape currently under construction. Two for architecture
+// (one lit plane, one dark plane per form) and three for characters — more
+// than that and the bands sit adjacent on curved geometry and read as a
+// gradient, which is exactly what flat cartoon colour is not.
+const STEPS = { ARCH: 2, CHARACTER: 3 }
+let steps = STEPS.CHARACTER
+
+/** Build `make()` with a given ramp-step count, restoring the previous one. */
+function withSteps(n, make) {
+  const previous = steps
+  steps = n
+  try {
+    return make()
+  } finally {
+    steps = previous
+  }
+}
+
 function meshOf(geometry, color, opts) {
-  const m = new THREE.Mesh(geometry, toonMaterial(color, opts))
+  const m = new THREE.Mesh(geometry, toonMaterial(color, { steps, ...opts }))
   m.castShadow = true
   m.receiveShadow = true
   return m
@@ -65,25 +85,28 @@ function seeded(seed) {
 
 // ------------------------------------------------------------------- chicken
 
+// The comb, beak, wattles and feet are the only saturated red/orange in the
+// hen. They are the handles the eye grabs to find her, so they are drawn well
+// past life-size relative to the skull.
 function henComb() {
   const comb = new THREE.Group()
-  for (const [y, z] of [[0.05, 0.08], [0.075, 0], [0.045, -0.08]]) {
-    comb.add(at(scl(ball(0.065, P.comb, 14), 0.5, 1.4, 1.0), 0, y, z))
+  for (const [y, z] of [[0.06, 0.115], [0.105, 0], [0.055, -0.115]]) {
+    comb.add(at(scl(ball(0.095, P.comb, 14), 0.5, 1.5, 1.0), 0, y, z))
   }
   return comb
 }
 
 function henHead() {
   const head = new THREE.Group()
-  head.add(ball(0.16, P.hen))
-  const comb = at(henComb(), 0, 0.13, 0.01)
+  head.add(ball(0.175, P.hen))
+  const comb = at(henComb(), 0, 0.14, 0.01)
   head.add(comb)
-  head.add(at(rot(spike(0.058, 0.18, P.beak, 10), Math.PI / 2), 0, -0.02, 0.2))
-  head.add(at(ball(0.045, P.comb, 12), 0, -0.1, 0.14))
-  head.add(at(ball(0.033, P.comb, 12), 0, -0.15, 0.115))
+  head.add(at(rot(spike(0.082, 0.27, P.beak, 10), Math.PI / 2), 0, -0.02, 0.26))
+  head.add(at(ball(0.062, P.comb, 12), 0, -0.11, 0.15))
+  head.add(at(ball(0.046, P.comb, 12), 0, -0.18, 0.12))
   for (const s of [-1, 1]) {
-    head.add(at(ball(0.052, P.shell, 12), 0.075 * s, 0.045, 0.115))
-    head.add(detail(at(ball(0.029, INK, 10), 0.086 * s, 0.05, 0.145)))
+    head.add(at(ball(0.058, P.shell, 12), 0.08 * s, 0.05, 0.12))
+    head.add(detail(at(ball(0.034, INK, 10), 0.092 * s, 0.055, 0.152)))
   }
   head.userData.comb = comb
   return head
@@ -108,20 +131,23 @@ function henTail() {
 
 function henLeg(side) {
   const leg = at(new THREE.Group(), 0.11 * side, 0.32, 0.02)
-  leg.add(at(tube(0.033, 0.04, 0.32, P.beak, 8), 0, -0.16, 0))
+  leg.add(at(tube(0.042, 0.05, 0.32, P.beak, 8), 0, -0.16, 0))
   const foot = at(new THREE.Group(), 0, -0.32, 0)
-  foot.add(at(box(0.11, 0.05, 0.11, P.beak), 0, 0.025, 0.02))
-  for (const a of [-0.55, 0, 0.55]) {
-    foot.add(at(rot(box(0.05, 0.045, 0.18, P.beak), 0, a, 0), Math.sin(a) * 0.055, 0.025, 0.09))
+  foot.add(at(box(0.15, 0.06, 0.15, P.beak), 0, 0.03, 0.02))
+  for (const a of [-0.6, 0, 0.6]) {
+    foot.add(at(rot(box(0.065, 0.055, 0.24, P.beak), 0, a, 0), Math.sin(a) * 0.075, 0.03, 0.12))
   }
   leg.add(foot)
   return leg
 }
 
-/** White hen, ~0.9 to the head and ~1.05 to the comb tips: beach-ball body,
- *  oversized head, huge comb, stubby wings, skinny legs, big splayed feet. */
-export function makeChicken() {
+/** She is the subject of the game, so she is drawn at protagonist scale rather
+ *  than at hen scale — the rig is built at natural proportion and blown up. */
+const HEN_SCALE = 1.8
+
+function buildChicken() {
   const g = new THREE.Group()
+  const rig = scl(new THREE.Group(), HEN_SCALE)
   const body = at(new THREE.Group(), 0, 0.46, 0)
   body.add(scl(ball(0.28, P.hen), 1.06, 0.95, 1.25))
   // Head rides high and forward so head-vs-body still reads as two shapes from
@@ -133,15 +159,22 @@ export function makeChicken() {
   body.add(head, wingL, wingR, tail)
   const legL = henLeg(-1)
   const legR = henLeg(1)
-  g.add(body, legL, legR)
+  rig.add(body, legL, legR)
+  g.add(rig)
   g.userData.parts = { body, head, comb: head.userData.comb, wingL, wingR, legL, legR, tail }
-  return addOutline(g, { thickness: 0.028 })
+  // Heaviest line in the frame: the subject reads before the props do.
+  return addOutline(g, { pixels: 2.6 })
+}
+
+/** Cream hen, ~1.85 to the comb tips: beach-ball body, oversized head, huge
+ *  comb, stubby wings, skinny legs, big splayed feet. */
+export function makeChicken() {
+  return withSteps(STEPS.CHARACTER, buildChicken)
 }
 
 // ----------------------------------------------------------------------- egg
 
-/** Off-white egg, ~0.25 tall, resting on the ground. */
-export function makeEgg() {
+function buildEgg() {
   const g = new THREE.Group()
   const h = 0.25
   const profile = []
@@ -151,7 +184,12 @@ export function makeEgg() {
     profile.push(new THREE.Vector2(Math.max(0, r), (h / 2) * (1 - Math.cos(t))))
   }
   g.add(meshOf(new THREE.LatheGeometry(profile, 18), P.shell))
-  return addOutline(g, { thickness: 0.021 })
+  return addOutline(g)
+}
+
+/** Off-white egg, ~0.25 tall, resting on the ground. */
+export function makeEgg() {
+  return withSteps(STEPS.CHARACTER, buildEgg)
 }
 
 // ---------------------------------------------------------------------- coop
@@ -181,8 +219,7 @@ function coopRamp() {
   return ramp
 }
 
-/** Red hen-house on stumpy legs, ~2.6 wide, ramp up to a dark doorway. */
-export function makeCoop() {
+function buildCoop() {
   const g = new THREE.Group()
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) g.add(at(tube(0.1, 0.13, 0.64, P.woodDark, 8), sx, 0.32, 0.72 * sz))
@@ -194,7 +231,12 @@ export function makeCoop() {
   const door = at(new THREE.Object3D(), 0, 0, 1.98)
   g.add(door)
   g.userData.door = door
-  return addOutline(g, { thickness: 0.07 })
+  return addOutline(g)
+}
+
+/** Red hen-house on stumpy legs, ~2.6 wide, ramp up to a dark doorway. */
+export function makeCoop() {
+  return withSteps(STEPS.ARCH, buildCoop)
 }
 
 // ---------------------------------------------------------------------- barn
@@ -242,8 +284,7 @@ function barnLoft() {
   return loft
 }
 
-/** Classic Saturday-morning barn: bulging gambrel, cream trim, X-braced doors. */
-export function makeBarn() {
+function buildBarn() {
   const g = new THREE.Group()
   g.add(extruded(barnWallShape(), 8, P.barnRed))
   g.add(extruded(barnRoofShape(), 8.7, P.barnDark))
@@ -253,13 +294,17 @@ export function makeBarn() {
   }
   g.add(barnDoors(), barnLoft())
   g.add(at(box(0.16, 4.4, 0.12, P.barnRed), 0, 2.3, 4.24))
-  return addOutline(g, { thickness: 0.1 })
+  return addOutline(g)
+}
+
+/** Classic Saturday-morning barn: bulging gambrel, cream trim, X-braced doors. */
+export function makeBarn() {
+  return withSteps(STEPS.ARCH, buildBarn)
 }
 
 // --------------------------------------------------------------------- props
 
-/** Post-and-rail fence running along +X, centered on the origin. */
-export function makeFence(length = 6) {
+function buildFence(length) {
   const g = new THREE.Group()
   const spans = Math.max(1, Math.round(length / 2.2))
   const gap = length / spans
@@ -268,11 +313,15 @@ export function makeFence(length = 6) {
     g.add(at(post, -length / 2 + i * gap, 0.55, 0))
   }
   for (const y of [0.84, 0.46]) g.add(at(box(length, 0.15, 0.12, P.cream), 0, y, 0.03))
-  return addOutline(g, { thickness: 0.04 })
+  return addOutline(g)
 }
 
-/** Golden hay mound, ~2.5 tall, with straw poking out at silly angles. */
-export function makeHaystack() {
+/** Post-and-rail fence running along +X, centered on the origin. */
+export function makeFence(length = 6) {
+  return withSteps(STEPS.ARCH, () => buildFence(length))
+}
+
+function buildHaystack() {
   const g = new THREE.Group()
   const profile = []
   for (let i = 0; i <= 11; i++) {
@@ -290,7 +339,12 @@ export function makeHaystack() {
     swivel.add(rot(spike(0.09, 0.62, P.hayDark, 6), 1.05 + rnd() * 0.3, 0, 0))
     g.add(swivel)
   }
-  return addOutline(g, { thickness: 0.07 })
+  return addOutline(g)
+}
+
+/** Golden hay mound, ~2.5 tall, with straw poking out at silly angles. */
+export function makeHaystack() {
+  return withSteps(STEPS.ARCH, buildHaystack)
 }
 
 // ----------------------------------------------------------------------- pig
@@ -325,21 +379,24 @@ function pigLegs() {
   return legs
 }
 
-/** Pink pig flopped on its side, big round belly, fast asleep. ~1.9 long. */
-export function makePig() {
+function buildPig() {
   const g = new THREE.Group()
   g.add(at(scl(ball(0.48, P.pig), 1.3, 0.8, 1.0), 0, 0.38, 0))
   g.add(at(scl(ball(0.42, P.pig), 1.15, 0.85, 0.85), -0.04, 0.4, 0.3))
   g.add(pigHead(), pigLegs())
   const tail = meshOf(new THREE.TorusGeometry(0.11, 0.035, 6, 14), P.pigDark)
   g.add(at(rot(tail, 0, 0.5, 0), -0.64, 0.44, -0.06))
-  return addOutline(g, { thickness: 0.05 })
+  return addOutline(g)
+}
+
+/** Pink pig flopped on its side, big round belly, fast asleep. ~1.9 long. */
+export function makePig() {
+  return withSteps(STEPS.CHARACTER, buildPig)
 }
 
 // ---------------------------------------------------------------------- tree
 
-/** Broccoli-blob tree, ~5 tall. */
-export function makeTree() {
+function buildTree() {
   const g = new THREE.Group()
   g.add(at(rot(tube(0.26, 0.46, 1.9, P.trunk, 10), 0, 0, 0.04), 0, 0.94, 0))
   g.add(at(rot(tube(0.13, 0.17, 0.9, P.trunk, 8), 0, 0.4, 0.85), -0.4, 2.05, 0.1))
@@ -354,13 +411,17 @@ export function makeTree() {
   ]
   for (const [x, y, z, r, c] of blobs) canopy.add(at(ball(r, c, 18), x, y, z))
   g.add(canopy)
-  return addOutline(g, { thickness: 0.09 })
+  return addOutline(g)
+}
+
+/** Broccoli-blob tree, ~5 tall. */
+export function makeTree() {
+  return withSteps(STEPS.ARCH, buildTree)
 }
 
 // ------------------------------------------------------------------ salesman
 
-/** Traveling-salesman NPC placeholder, ~1.8 tall. Unused in phase 1. */
-export function makeSalesman() {
+function buildSalesman() {
   const g = new THREE.Group()
   for (const s of [-1, 1]) g.add(at(box(0.17, 0.75, 0.2, P.dark), 0.12 * s, 0.38, 0))
   g.add(at(tube(0.26, 0.32, 0.8, P.suit, 12), 0, 1.12, 0))
@@ -371,5 +432,10 @@ export function makeSalesman() {
   g.add(at(tube(0.2, 0.2, 0.16, P.hay, 14), 0, 1.9, 0))
   g.add(at(tube(0.36, 0.36, 0.04, P.hay, 16), 0, 1.83, 0))
   g.add(at(box(0.34, 0.26, 0.12, P.woodDark), 0.46, 0.75, 0.1))
-  return addOutline(g, { thickness: 0.04 })
+  return addOutline(g)
+}
+
+/** Traveling-salesman NPC placeholder, ~1.8 tall. Unused in phase 1. */
+export function makeSalesman() {
+  return withSteps(STEPS.CHARACTER, buildSalesman)
 }

@@ -13,19 +13,20 @@ const renderer = new THREE.WebGLRenderer({ antialias: true })
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
 renderer.setSize(innerWidth, innerHeight)
 renderer.shadowMap.enabled = true
-renderer.shadowMap.type = THREE.PCFSoftShadowMap
+renderer.shadowMap.type = THREE.PCFShadowMap // crisp cartoon shadows, not photographic blur
+renderer.toneMapping = THREE.NoToneMapping // ink shader outputs raw color; keep models on the same scale
 app.appendChild(renderer.domElement)
 
 const scene = new THREE.Scene()
 const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.5, 600)
-camera.position.set(26, 30, 38)
+camera.position.set(4, 16, 23)
 
 const controls = new OrbitControls(camera, renderer.domElement)
-controls.target.set(0, 0, 4)
+controls.target.set(2, 0, -5)
 controls.enableDamping = true
-controls.maxPolarAngle = Math.PI * 0.44
+controls.maxPolarAngle = Math.PI * 0.46
 controls.minPolarAngle = Math.PI * 0.15
-controls.minDistance = 12
+controls.minDistance = 10
 controls.maxDistance = 90
 controls.mouseButtons.LEFT = null // left click is for the game; pan/rotate on right/middle
 controls.update()
