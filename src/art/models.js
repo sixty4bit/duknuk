@@ -89,6 +89,29 @@ const scl = (o, x, y = x, z = x) => (o.scale.set(x, y, z), o)
 /** Tiny features that an outline would swallow (pupils, nostrils). */
 const detail = (o) => ((o.userData.noOutline = true), (o.castShadow = false), o)
 
+/**
+ * A line the ARTIST drew, as opposed to one the renderer found.
+ *
+ * The interior-ink pass can only stroke an edge that exists in the mesh, and
+ * the places a cartoon most needs a line — the break between a hen's wing and
+ * her body, the quill down a tail feather — are drawn on surfaces that are one
+ * smooth blob with no edge anywhere in them. So the line is modelled: a thin
+ * ink slab that PIERCES the form it belongs to rather than floating on it, so
+ * it stays welded to a curved surface at every angle instead of lifting off at
+ * the ends. Never outlined and never shadowed — it IS the outline.
+ */
+const inkSlab = (x, y, z) => detail(box(x, y, z, INK))
+
+/**
+ * Opt a mesh out of the interior-ink pass.
+ *
+ * Crease extraction cannot tell a form break from a tessellation seam, and on
+ * a rope, a straw or any other pencil-thin cylinder the two are the same edge:
+ * six facet lines drawn across a 4 cm cylinder don't describe it, they fill it
+ * in solid. Anything whose whole diameter is about one pen width goes here.
+ */
+const noInterior = (o) => ((o.userData.noInteriorInk = true), o)
+
 function extruded(shape, depth, color, curveSegments = 8) {
   const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, curveSegments })
   geo.translate(0, 0, -depth / 2)
@@ -149,20 +172,36 @@ function henHead() {
   return head
 }
 
+/** Two feather breaks raked across the wing. Without them the wing is a cream
+ *  blob on a cream body, separated by a value step the toon ramp may not even
+ *  make — the one place a cel drawing would never leave the pen up. */
 function henWing(side) {
   const wing = at(new THREE.Group(), 0.27 * side, 0.05, -0.02)
   wing.add(at(scl(ball(0.17, P.hen, 16), 0.3, 0.82, 1.05), 0.015 * side, -0.1, 0))
   wing.add(at(scl(ball(0.095, P.henShade, 12), 0.3, 0.85, 1.1), 0.02 * side, -0.21, -0.07))
+  for (const [y, tilt] of [[-0.055, 0.22], [-0.152, 0.15]]) {
+    wing.add(at(rot(inkSlab(0.09, 0.026, 0.2), tilt, 0, 0), 0.035 * side, y, -0.01))
+  }
   return wing
 }
 
+/** One blade with its quill drawn down the middle. The quill is what makes a
+ *  cone read as a FEATHER; three bare cones read as three cones. */
+function tailFeather(spread, tone) {
+  const feather = at(rot(new THREE.Group(), -0.95, 0, spread), 0, 0.12, -0.06)
+  feather.add(scl(spike(0.085, 0.36, tone, 10), 0.42, 1, 1))
+  feather.add(at(inkSlab(0.07, 0.2, 0.024), 0, -0.05, 0))
+  return feather
+}
+
+// Fanned wider than the old ±0.4: at that spread the three blades overlapped
+// almost exactly and the ink hulls swallowed each other, so the tail was one
+// undifferentiated wedge. ±0.62 opens a gap the silhouette can read through.
+const TAIL_FAN = [-0.62, 0, 0.62]
+
 function henTail() {
   const tail = new THREE.Group()
-  const fan = [-0.4, 0, 0.4]
-  fan.forEach((a, i) => {
-    const feather = scl(spike(0.085, 0.36, i === 1 ? P.henShade : P.hen, 10), 0.42, 1, 1)
-    tail.add(at(rot(feather, -0.95, 0, a), 0, 0.12, -0.06))
-  })
+  TAIL_FAN.forEach((a, i) => tail.add(tailFeather(a, i === 1 ? P.henShade : P.hen)))
   return tail
 }
 
@@ -199,8 +238,10 @@ function buildChicken() {
   rig.add(body, legL, legR)
   g.add(rig)
   g.userData.parts = { body, head, comb: head.userData.comb, wingL, wingR, legL, legR, tail }
-  // Heaviest line in the frame: the subject reads before the props do.
-  return addOutline(g, { pixels: INK_WEIGHT.HERO })
+  // Heaviest line in the frame: the subject reads before the props do. She is
+  // built from smooth blobs, so crease extraction finds almost nothing on her —
+  // the wing and tail lines are drawn explicitly, above.
+  return addOutline(g, { pixels: INK_WEIGHT.HERO, interior: true })
 }
 
 /** Cream hen, ~1.85 to the comb tips: beach-ball body, oversized head, huge
@@ -362,7 +403,9 @@ function buildCoop() {
   g.add(door)
   g.userData.door = door
   // The chicken's home and the frame's second read: hero weight, like the barn.
-  return addOutline(g, { pixels: INK_WEIGHT.HERO })
+  // Interior ink is what separates the two roof planes from each other and the
+  // doorway trim from the wall — all of it flat red-on-red without it.
+  return addOutline(g, { pixels: INK_WEIGHT.HERO, interior: true })
 }
 
 /** Red hen-house on stumpy legs, ~2.6 wide, ramp up to a dark doorway. */
@@ -473,8 +516,11 @@ function buildBarn() {
   g.add(barnDoors(), barnLoft())
   g.add(at(box(0.16, 4.4, 0.12, P.barnRed), 0, 2.3, 4.24))
   // The biggest silhouette on the farm has to carry the heaviest line, or it
-  // dissolves into the field at viewing size.
-  return addOutline(g, { pixels: INK_WEIGHT.HERO })
+  // dissolves into the field at viewing size — and the biggest COLLECTION of
+  // forms needs the second pen most: without interior ink the gambrel meets
+  // the wall on a value change alone and the doors are two cream rectangles
+  // floating on red.
+  return addOutline(g, { pixels: INK_WEIGHT.HERO, interior: true })
 }
 
 /** Classic Saturday-morning barn: bulging gambrel, cream trim, X-braced doors. */
@@ -592,7 +638,9 @@ function buildFence(length) {
   // reads as a fence, and its loose end can't swing below the grass.
   const breakAt = spans >= 4 ? 1 + Math.floor(rnd() * (spans - 2)) : -1
   FENCE.railY.forEach((y, row) => g.add(fenceRails(rnd, xs, y, row === 0 ? breakAt : -1)))
-  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+  // Every post and rail is a box, so the interior pass draws the corner of each
+  // one: cream lumber on a cream fence is otherwise a single pale mass.
+  return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
 }
 
 /** Post-and-rail fence running along +X, centered on the origin. */
@@ -666,7 +714,10 @@ function buildHaystack(seed) {
   // The mound is a building-sized mass, so it carries a building's line or it
   // dissolves into the field; the straw stays a step lighter so the decoration
   // never out-draws the shape it sits on.
-  addOutline(mound, { pixels: INK_WEIGHT.HERO })
+  // Interior ink on the mound alone: the lathe's course lips are real profile
+  // corners and want the line. The tufts are 7-sided cones whose only creases
+  // are tessellation seams, so they stay clean.
+  addOutline(mound, { pixels: INK_WEIGHT.HERO, interior: true })
   return addOutline(g, { pixels: INK_WEIGHT.PROP })
 }
 
@@ -758,7 +809,7 @@ function buildPig() {
   g.userData.parts = { body }
   g.userData.restYaw = PIG_REST_YAW
   // A gag lying in the chicken's path is a foreground read, a step under hero.
-  return addOutline(g, { pixels: 4.0 })
+  return addOutline(g, { pixels: 4.0, interior: true })
 }
 
 /** Pink pig flopped on its side, big round belly, fast asleep. ~1.9 long.
@@ -903,7 +954,7 @@ function buildSalesman() {
   g.add(at(tube(0.2, 0.2, 0.16, P.hay, 14), 0, 1.9, 0))
   g.add(at(tube(0.36, 0.36, 0.04, P.hay, 16), 0, 1.83, 0))
   g.add(at(box(0.34, 0.26, 0.12, P.woodDark), 0.46, 0.75, 0.1))
-  return addOutline(g, { pixels: INK_WEIGHT.HERO })
+  return addOutline(g, { pixels: INK_WEIGHT.HERO, interior: true })
 }
 
 /** Traveling-salesman NPC placeholder, ~1.8 tall. Unused in phase 1. */
@@ -929,7 +980,7 @@ const v3 = (x, y, z) => new THREE.Vector3(x, y, z)
 function strut(a, b, r, color, seg = 6) {
   const dir = new THREE.Vector3().subVectors(b, a)
   const len = Math.max(dir.length(), 1e-4)
-  const m = tube(r, r, len, color, seg)
+  const m = noInterior(tube(r, r, len, color, seg))
   m.quaternion.setFromUnitVectors(UP, dir.divideScalar(len))
   return at(m, (a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2)
 }
@@ -1018,7 +1069,7 @@ function buildBirdOnPost(seed) {
   const [body, accent] = BIRD_PLUMAGE[Math.floor(rnd() * BIRD_PLUMAGE.length)]
   const bird = withSteps(STEPS.CHARACTER, () => songbird(body, 0.15, accent))
   g.add(at(rot(bird, 0, rnd() * Math.PI * 2, 0), 0, h + 0.02, 0))
-  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+  return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
 }
 
 /**
@@ -1038,7 +1089,7 @@ function strawFan(rnd, count, len, spread, color = P.hayDark) {
   const fan = new THREE.Group()
   for (let i = 0; i < count; i++) {
     const a = (i / count) * Math.PI * 2 + rnd() * 0.6
-    const straw = scl(spike(len * 0.25, len * (0.7 + rnd() * 0.7), color, 6), 1, 1, 0.4)
+    const straw = scl(noInterior(spike(len * 0.25, len * (0.7 + rnd() * 0.7), color, 6)), 1, 1, 0.4)
     fan.add(rot(straw, spread * Math.cos(a), a, spread * Math.sin(a)))
   }
   return fan
@@ -1096,7 +1147,7 @@ function buildScarecrow(seed) {
   g.add(at(scarecrowHat(), 0, 2.06, -0.02))
   const crow = withSteps(STEPS.CHARACTER, () => songbird(P.crow, 0.19, 0x171320))
   g.add(at(rot(crow, 0, 2.5 + rnd() * 0.7, 0), 0.29, 2.03, 0.07))
-  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+  return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
 }
 
 /**
@@ -1169,7 +1220,7 @@ function buildLaundryLine(seed) {
     const cloth = item.kind === 'shirt' ? shirt(item.color) : overalls(item.color)
     g.add(hang(cloth, ropePoint(a, b, sag, item.t), rnd))
   }
-  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+  return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
 }
 
 /**
@@ -1219,7 +1270,7 @@ function buildCrateStack(seed) {
   const [cx, cz] = [-1.42, 0.62]
   g.add(at(groundDecal(blobShape(rnd, 0.58), P.grain), cx, 0, cz))
   g.add(grainPips(rnd, cx, cz))
-  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+  return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
 }
 
 /**
@@ -1251,16 +1302,54 @@ function barrowRig() {
   return rig
 }
 
+/**
+ * The pose, and why it is two nested rotations instead of one.
+ *
+ * A tipped barrow is only funny if you can still tell it is a barrow, and the
+ * whole read hangs on the wheel: a disc seen edge-on is a black bar at a random
+ * angle, and everything else in the drawing becomes debris around it. The old
+ * pose put all three angles in ONE Euler, and Euler XYZ applies Y *inside* X
+ * and Z — so the barrow's yaw was spun underneath its own fall. Turning it to
+ * show the wheel also re-aimed the tip, the two fought, and the wheel came out
+ * 15° off edge-on with the handles hidden behind the tray.
+ *
+ * Split in two, each rotation does one job. `yaw` is a parent group: which way
+ * the barrow was pointing when it went over, and therefore how open the wheel
+ * is to the camera. `pitch`/`roll` are the fall itself, about the barrow's own
+ * axes. `y` seats the result so the wheel rim rests on the dirt (0.03 clear,
+ * which the grass closes) and the tray's lower edge and near handle bed 0.09
+ * INTO it — three contacts, well spread. A prop settled a little into the
+ * ground reads as lying there; one balanced exactly on it reads as a glitch.
+ */
+const BARROW = { yaw: 1.35, pitch: 0.4, roll: -1.05, y: 0.37 }
+
+/**
+ * Placement yaw this pose is authored against (world.js `_placeBarnYard`).
+ *
+ * Presentation yaw is the SUM of the two, so the wheel's opening to the start
+ * camera is a property of the pair, not of the model alone. At -0.9 + 1.35 the
+ * disc reads about 80% open. Re-roll the placement and the gag goes back to a
+ * black bar — read this instead, exactly as makePig's restYaw is read.
+ */
+const BARROW_REST_YAW = -0.9
+
 function buildWheelbarrow() {
   const g = new THREE.Group()
   // Nobody parks a barrow squarely on its legs; a catalogue photograph is not
-  // a drawing. It has gone over onto one handle, wheel free in the air.
-  g.add(at(rot(barrowRig(), 0.1, 0.35, -1.15), -0.42, 0.28, 0.16))
-  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+  // a drawing. It has gone over on its side, wheel up and facing out, one
+  // handle in the grass and the other thrown at the sky.
+  const spun = at(rot(new THREE.Group(), 0, BARROW.yaw, 0), -0.08, BARROW.y, 0.4)
+  spun.add(rot(barrowRig(), BARROW.pitch, 0, BARROW.roll))
+  g.add(spun)
+  g.userData.restYaw = BARROW_REST_YAW
+  // Interior ink is what puts the circle back in the wheel: the tyre's two cap
+  // rims are the only edges in the whole prop that describe it as round.
+  return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
 }
 
-/** Red barrow tipped over onto one handle, wheel off the dirt. ~2.3 long
- *  along Z with the handles, ~1.4 across. */
+/** Red barrow tipped over on its side, wheel presented to camera and resting
+ *  in the dirt. ~2.2 long along Z with the handles, ~1.5 across.
+ *  `userData.restYaw` is the placement yaw the pose is authored for. */
 export function makeWheelbarrow() {
   return withSteps(STEPS.ARCH, buildWheelbarrow)
 }
@@ -1284,7 +1373,7 @@ function buildMilkCan() {
     const handle = meshOf(new THREE.TorusGeometry(0.09, 0.028, 6, 12, Math.PI), P.metalDark)
     g.add(at(rot(handle, 0, Math.PI / 2, 0), 0.26 * s, 0.64, 0))
   }
-  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+  return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
 }
 
 /** Steel milk can with a red lid, ~1.05 tall. A cool metal note against all
@@ -1347,7 +1436,7 @@ function buildPeckingHen(seed) {
   legR.position.z -= 0.05
   rig.add(body, legL, legR)
   g.add(rot(rig, 0, rnd() * Math.PI * 2, 0))
-  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+  return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
 }
 
 /**

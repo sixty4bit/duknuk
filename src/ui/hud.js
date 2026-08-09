@@ -4,7 +4,7 @@
 
 const STYLE_ID = 'duk-hud-style'
 const INK = '#1a1208'
-const CREAM = '#fff4d6'
+const CREAM = '#fdf3dc'
 const BARN_RED = '#c8352b'
 
 const STYLE_CSS = `
@@ -41,18 +41,18 @@ const STYLE_CSS = `
      panels sit on a diagonal so the UI doesn't pile all its weight on the
      same side as the balloon while the barn/paddock mass sits on the right.
      Stroke and shadow are restated here (not left to .duk-panel's default)
-     so this chip is drawn with the same pen as the 3D scene: border-width
-     matches INK_WEIGHT.HERO (toon.js, 4.5 css px), color is the shared INK
-     constant, and the shadow is a hard fixed-pixel offset with zero blur —
-     no soft drop-shadow, that's what dates a chip to modern mobile UI. */
+     so this chip reads as a hand-lettered title-card piece, not a modern
+     app chip: 2.5px ink border in the shared INK color (matches the world's
+     ink, not its hero-outline thickness), hard 4px offset shadow with zero
+     blur — no soft drop-shadow, that's what dates a chip to modern mobile UI. */
   position: fixed; top: 16px; right: 16px;
   display: flex; align-items: center; gap: 10px;
   padding: 8px 8px 8px 18px;
   flex-direction: row-reverse;
   transform: rotate(1deg);
   animation: duk-squash-in 0.4s ease-out;
-  border-width: 4.5px;
-  box-shadow: 5px 6px 0 var(--duk-ink);
+  border-width: 2.5px;
+  box-shadow: 4px 4px 0 var(--duk-ink);
 }
 .duk-coin {
   width: 40px; height: 40px; border-radius: 50%;
@@ -77,45 +77,51 @@ const STYLE_CSS = `
 .duk-hint {
   /* bottom-left; the money chip has moved to top-right so the two panels
      balance the composition on a diagonal instead of both hugging the left
-     edge against the barn/paddock mass on the right. Inset well past the
-     portrait/tail overhang (-20px/-17px) so both clear the viewport edge
-     with margin instead of clipping. */
-  position: fixed; bottom: 24px; left: 40px;
-  transform: rotate(-0.8deg);
+     edge against the barn/paddock mass on the right. Inset ~16px from the
+     viewport edge (the frame crop line), with the portrait/tail overhang
+     trimmed to stay inside that margin so the chicken-head tab clears the
+     crop instead of being cut off. The stronger -1.5deg tilt (was -0.8deg)
+     reads as a hand-lettered title card rather than a level UI chip. */
+  position: fixed; bottom: 24px; left: 16px;
+  transform: rotate(-1.5deg);
   padding: 10px 26px 10px 34px; font-size: 15px; text-align: left;
   max-width: 40vw;
-  /* stroke matches INK_WEIGHT.HERO (toon.js, 4.5 css px) and the shared INK
-     color constant, and the shadow is restated as a hard fixed-pixel offset
-     with zero blur, so this chip is inked by the same pen as the money chip
-     and the 3D scene instead of reading as blurred modern mobile chrome */
-  border-width: 4.5px;
-  box-shadow: 5px 6px 0 var(--duk-ink);
+  /* 2.5px ink border in the shared INK color (matches the world's ink, not
+     its hero-outline thickness) and a hard 4px offset shadow with zero
+     blur, so this chip is inked by the same pen as the money chip instead
+     of reading as blurred modern mobile chrome */
+  border-width: 2.5px;
+  box-shadow: 4px 4px 0 var(--duk-ink);
   animation: duk-squash-in 0.4s ease-out;
 }
 .duk-hint::before {
   /* speech-bubble tail, ink outline — points left-down at the chicken
      avatar badge pinned to the panel's top-left corner, so the line reads
-     as spoken by the chicken instead of by empty grass off to the right */
+     as spoken by the chicken instead of by empty grass off to the right.
+     Overhang trimmed to -9px (was -17px) so its tip stays inside the 16px
+     viewport inset instead of running past the frame edge. */
   content: '';
-  position: absolute; top: 4px; left: -17px;
+  position: absolute; top: 4px; left: -9px;
   width: 0; height: 0;
   border-top: 4px solid transparent;
   border-bottom: 11px solid transparent;
-  border-right: 17px solid var(--duk-ink);
+  border-right: 9px solid var(--duk-ink);
 }
 .duk-hint::after {
   /* tail cream fill, inset over the ink triangle */
   content: '';
-  position: absolute; top: 6px; left: -12px;
+  position: absolute; top: 6px; left: -6px;
   width: 0; height: 0;
   border-top: 3px solid transparent;
   border-bottom: 8px solid transparent;
-  border-right: 12px solid var(--duk-cream);
+  border-right: 6px solid var(--duk-cream);
 }
 .duk-hint-portrait {
   /* hangs outside the panel like a badge pinned to the corner, so it never
-     overlaps the hint text */
-  position: absolute; top: -20px; left: -20px;
+     overlaps the hint text. Overhang trimmed to -10px (was -20px) to match
+     the 16px viewport inset above — the badge still hangs past the panel's
+     own edge but stays clear of the frame crop. */
+  position: absolute; top: -18px; left: -10px;
   width: 34px; height: 34px; border-radius: 50%;
   background: #fff8ea; border: 3px solid var(--duk-ink);
   box-shadow: 2px 2px 0 var(--duk-ink);

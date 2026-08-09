@@ -66,9 +66,15 @@ const SUN_POS = new THREE.Vector3(34, 20, -10)
 // that can come up as three narrow conifers — and the swing tree in particular
 // has to be a wide blob with a bough to hang from. Seed 13 measures ~5.0 wide
 // by 5.2 tall; the others are chosen for silhouette variety beside it.
+//
+// Swing tree x nudged -10 -> -9 (critic defect 1): the near repoussoir wing
+// used to sit close enough in screen-space to this tree's x that it swallowed
+// the tire swing hanging off it. reach = clamp(width*0.32, 1,2) is ~1.6 for
+// this seed, so the swing itself lands at treeX+reach; -9 keeps the swing at
+// x ~ -7.4, clear of the x >= -8 line the wing was moved behind.
 const GROVE = [
   { x: -16, z: -16, seed: 41, yaw: 0.8 },
-  { x: -10, z: -11, seed: 13, yaw: 2.1 }, // the swing tree
+  { x: -9, z: -11, seed: 13, yaw: 2.1 }, // the swing tree
   { x: -9, z: -17, seed: 7, yaw: 4.4 },
   { x: -15, z: -11, seed: 2, yaw: 5.6 },
 ]
@@ -177,12 +183,25 @@ const FIELD_BANDS = [
   { color: new THREE.Color(0xb2d668), value: 1.1 },
 ]
 
+/** Warm lift for the far band — pure yellow would fight the field's green
+ * family, so this leans yellow-green rather than straight yellow. */
+const FAR_BAND_WARM = new THREE.Color(0xcdc26e)
+
 /** Low-frequency field variation baked as vertex colors, quantized into
  * discrete painted bands instead of a continuous cool-to-warm airbrush.
  * Wavelength tuned to ~30-32u (25-35u target) so the 120u field carries two
  * or three broad, travel-able masses rather than a fine grid or one flat
  * value — the amplitude above is what actually made those masses show; this
- * frequency is what keeps them broad instead of confetti-sized. */
+ * frequency is what keeps them broad instead of confetti-sized.
+ *
+ * Critic defect 4: that hue-band noise alone gave near field, mid field and
+ * far field the same value within a few percent — no dark-mid-light
+ * structure for the eye to travel front-to-back or for the hero hen to read
+ * against. Layered on top now: an explicit depth recession keyed off world z
+ * (the camera looks down -z, so +z is the near strip in front of the coop,
+ * -z recedes toward the treeline) — near darkens ~15%, mid holds, far lifts
+ * ~8% toward warm yellow-green, independent of the hue-band quantization
+ * above so the two systems don't fight. */
 function applyBroadFieldShading(geo) {
   const pos = geo.attributes.position
   const colors = new Float32Array(pos.count * 3)
@@ -192,9 +211,14 @@ function applyBroadFieldShading(geo) {
     const n = Math.sin(x * 0.15 + z * 0.13 + 1.7) * 0.7 + Math.sin(x * 0.03 - z * 0.025) * 0.3
     const t = THREE.MathUtils.clamp(0.5 + n * 0.5, 0, 1)
     const band = FIELD_BANDS[Math.min(FIELD_BANDS.length - 1, Math.floor(t * FIELD_BANDS.length))]
-    colors[i * 3] = band.color.r * band.value
-    colors[i * 3 + 1] = band.color.g * band.value
-    colors[i * 3 + 2] = band.color.b * band.value
+    const nearMul = 1 - 0.15 * smooth01(z, -2, 12)
+    const farLift = 0.08 * smooth01(-z, 30, 55)
+    const r = band.color.r * band.value * nearMul
+    const g = band.color.g * band.value * nearMul
+    const b = band.color.b * band.value * nearMul
+    colors[i * 3] = r + (FAR_BAND_WARM.r - r) * farLift
+    colors[i * 3 + 1] = g + (FAR_BAND_WARM.g - g) * farLift
+    colors[i * 3 + 2] = b + (FAR_BAND_WARM.b - b) * farLift
   }
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
 }
@@ -282,16 +306,27 @@ function drawCloudShape(ctx, cx, cy, s, { alpha = 0.94, fill = '#fffaf2' } = {})
 }
 
 /** Painted-flat clouds baked straight into the backdrop so they are visible
- * from frame one regardless of where the camera is orbited to. cy/scale are
- * pinned to the dome's actually-visible band (elevation = 90 - 180*(y/h); the
- * default camera only ever sees roughly -6.5..+4.4deg, i.e. y = h*0.475..0.537).
- * Cut from 9 clouds at 30-55px to 4-5 at 12-22px — nine clouds that size on a
- * 1024px dome each subtend 21-38deg of azimuth, more than the full
- * circumference once the seam duplicates are counted, which is what fused
- * them into one continuous white bar. A far rank (half scale, greyer, lower
- * alpha) sits behind a near rank (full scale/alpha) so the two ranks read as
- * depth instead of one flat layer, and a minimum angular separation keeps
- * real sky visible between every cloud. */
+ * from frame one regardless of where the camera is orbited to.
+ *
+ * Critic defect 3: cy/scale here were pinned to elevation = 90 - 180*(y/h)
+ * for a retired (2,14,34) camera; the real start camera ((-1,9.5,23) ->
+ * (-1.5,1.8,-7), see the START-VIEW note at the top of this file) tops out at
+ * only about +0.6deg elevation, so the old h*(0.45..0.505) band (+3.6..-0.9deg)
+ * put the far rank off the top of frame and the near rank at/below the
+ * occluded horizon — an empty sky in every screenshot. Retargeted to the
+ * elevation this camera actually shows: far rank y = h*(0.42..0.462)
+ * (~+14.4..+6.8deg), near rank y = h*(0.462..0.495) (~+6.8..+0.9deg), which
+ * reaches down to the camera's real ceiling instead of past it. If the camera
+ * reframes again, recompute this against elevation = 90 - 180*(y/h) rather
+ * than copying these numbers forward blind — that is exactly how this band
+ * went stale the first time.
+ *
+ * Also bumped from 2 far/3 near clouds at 12-22px to 3 far/4 near at 18-34px
+ * (near) / 9-17px (far, half scale) — the old count/size was a smudge at
+ * FOV 30 on a 1024px dome. A far rank (half scale, greyer, lower alpha) sits
+ * behind a near rank (full scale/alpha) so the two ranks read as depth
+ * instead of one flat layer, and a minimum angular separation keeps real sky
+ * visible between every cloud. */
 function drawPaintedClouds(ctx, w, h) {
   const rnd = seededRand(99)
   const accepted = []
@@ -310,12 +345,12 @@ function drawPaintedClouds(ctx, w, h) {
     }
   }
   // Far rank first so the near rank can sit visually in front of it.
-  for (let i = 0; i < 2; i++) {
-    const nearScale = 12 + rnd() * 10
-    place(nearScale * 0.5, 0.45, 0.478, { alpha: 0.6, fill: '#d7dbe0' })
-  }
   for (let i = 0; i < 3; i++) {
-    place(12 + rnd() * 10, 0.478, 0.505)
+    const nearScale = 18 + rnd() * 16
+    place(nearScale * 0.5, 0.42, 0.462, { alpha: 0.6, fill: '#d7dbe0' })
+  }
+  for (let i = 0; i < 4; i++) {
+    place(18 + rnd() * 16, 0.462, 0.495)
   }
 }
 
@@ -516,6 +551,30 @@ function buildCloudShadowMass(width, depth) {
   // composited over ground already pushed warm by scene fog produces a
   // grey-teal wash unrelated to either color in isolation.
   const mat = new THREE.MeshBasicMaterial({ map: cloudShadowTexture(), transparent: true, depthWrite: false, fog: true })
+  const mesh = new THREE.Mesh(geo, mat)
+  mesh.renderOrder = 1
+  return mesh
+}
+
+/** Critic defect 4: the barn's real-time cast shadow (sun + shadow map, see
+ * _configureSunShadow) lands as a large hard-edged mass on the ground plane,
+ * and the toon ramp's dark step (SHADOW_WARM, src/art/toon.js) only warms it
+ * by a fixed global ratio — not enough, at this scale, to keep a big flat
+ * polygon from reading as a second terrain type instead of a shadow. Same
+ * trick as the contact shadows and cloud-shadow mass above: a painted warm
+ * wash laid directly over the real shadow's footprint, low-alpha so it lifts
+ * value and hue toward ochre without erasing the underlying dark step
+ * entirely — "light falling across land," not land itself. */
+function buildBarnShadowWarmWash(width, depth) {
+  const geo = new THREE.PlaneGeometry(width, depth)
+  geo.rotateX(-Math.PI / 2)
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xd9a768,
+    transparent: true,
+    opacity: 0.3,
+    depthWrite: false,
+    fog: true,
+  })
   const mesh = new THREE.Mesh(geo, mat)
   mesh.renderOrder = 1
   return mesh
@@ -1212,10 +1271,45 @@ export class World {
     this._place(buildSilo(), -42, -34, 1.6, 0.3)
     this._place(buildWindmill(), 30, -50, 1.0, -0.4)
     this._place(buildWaterTower(), -8, -54, 1.75, 0.8) // radius bumped for the 1.35x model scale
+    this._placeMidgroundHaystackRow()
+  }
+
+  /** Critic defect 5: the mid-band between the near field and the treeline —
+   * roughly the left third of the frame at (-20,-14), frame-centre depth —
+   * held nothing but flat green; three trees and the water tower were the
+   * only incident, and both sit off to the side of this gap. A row of three
+   * scaled-up haystacks reads as one cohesive mass (not three small props —
+   * "the frame needs mass distribution, not more confetti") tall enough to
+   * register at that distance, the way buildSilo/buildWaterTower do. */
+  _placeMidgroundHaystackRow() {
+    const spots = [
+      { x: -20, z: -14, yaw: 0.4 },
+      { x: -22, z: -15.5, yaw: 2.1 },
+      { x: -18.5, z: -16, yaw: 4.0 },
+    ]
+    for (const s of spots) {
+      const stack = makeHaystack()
+      stack.scale.setScalar(2.2)
+      this._place(stack, s.x, s.z, 1.3 * 2.2, s.yaw)
+    }
   }
 
   _placeBarn() {
     this._place(makeBarn(), 11, -14, 5.6, 0)
+    this._placeBarnShadowWarmWash()
+  }
+
+  /** Critic defect 4: the barn's own real shadow lands roughly 17 units left
+   * (-x) and 5 forward (+z) of the barn along the sun's real SHADOW_DIR — a
+   * hard-edged, unwarmed dark-green mass, visually detached from its caster.
+   * Sized/positioned to touch the barn's own west wall (x ~5.6) so the wash
+   * reads as connected to its source instead of floating in open field, and
+   * raked to SHADOW_ANGLE so its long axis matches the sun's cast direction. */
+  _placeBarnShadowWarmWash() {
+    const wash = buildBarnShadowWarmWash(22, 14)
+    wash.position.set(-6, 0.025, -9)
+    wash.rotation.y = SHADOW_ANGLE
+    this.scene.add(wash)
   }
 
   /** Closed loop with a gate gap on the south side and a swing-gate prop
@@ -1241,7 +1335,12 @@ export class World {
     const runs = [
       { len: 12, x: 8, z: -9, r: 0 }, // south, west of gate
       { len: 12, x: 24, z: -9, r: 0 }, // south, east of gate
-      { len: 28, x: 30, z: 5, r: Math.PI / 2 }, // east
+      // East run shortened 28 -> 18 (critic defect 7): this file's own
+      // comment used to note the paddock fence "cut mid-rail by the frame
+      // edge" with no terminating post — a slice reads as a rendering
+      // accident, not a deliberate crop. Shortened so both ends fall
+      // decisively outside the visible frustum instead of grazing its edge.
+      { len: 18, x: 30, z: 5, r: Math.PI / 2 }, // east
       { len: 28, x: 16, z: 19, r: 0 }, // north
       // West run, shortened 28 -> 20 and slid north. At its old length it came
       // out of rotate() ending at world (7.8,-13.2) — INSIDE the barn, whose
@@ -1274,9 +1373,15 @@ export class World {
     for (const s of spots) this._place(makeHaystack(), s.x, s.z, s.r, Math.random() * Math.PI * 2)
   }
 
+  /** Critic defect 6: at the old (-3,6) the pig cropped to an anonymous pink
+   * lump at the bottom frame edge, half-behind the HUD hint banner — the
+   * DESIGN.md gag of a pig lying in the path was staged but invisible. Moved
+   * up the road to (-2,1), fully in frame on the near bend (see _placePath,
+   * which now detours through (-2.0,1.6) to keep going around it) and clear
+   * of the hint banner's bottom-left footprint. */
   _placePig() {
     const pig = makePig()
-    this._place(pig, -3, 6, 1.3, pig.userData.restYaw ?? -0.4)
+    this._place(pig, -2.0, 1.0, 1.3, pig.userData.restYaw ?? -0.4)
   }
 
   _placeCrops() {
@@ -1324,14 +1429,16 @@ export class World {
   }
 
   /** Left and centre of frame: the coop's own yard. The scarecrow is the one
-   * vertical between the pond and the coop and lands at nx -0.70 — far enough
-   * left to hold that third of the frame without crowding the coop. Laundry
+   * vertical between the pond and the coop; pulled in from x -10.8 to -7.6
+   * (critic defect 1) so it sits at x >= -8, clear of the repoussoir wing now
+   * staged at (-14,16) — it used to land close enough to that wing's screen
+   * position to read as a figure peeking out from behind a blob. Laundry
    * strings BEHIND the coop (smaller z) so it layers into depth instead of
-   * standing beside it, and the tire swing hangs off SWING_TREE at (-10,-11).
+   * standing beside it, and the tire swing hangs off SWING_TREE at (-9,-11).
    * Hens get no obstacle: they are the size of the animal that has
    * to walk past them, and the corridor south of the door is theirs. */
   _placeCoopYard() {
-    this._place(makeScarecrow(), -10.8, -3.2, 0.6, 0.45)
+    this._place(makeScarecrow(), -7.6, -3.2, 0.6, 0.45)
     this._placeLaundryLine()
     this._placeTireSwing()
     this._placeDecor(makePeckingHen(), -3.6, 0.8, 0.35, 2.3)
@@ -1378,16 +1485,26 @@ export class World {
   /** Right of frame: the working apron in front of the barn doors. The barn
    * sits at (11,-14) with its door wall at z ~ -9.98 spanning x 5.6..16.5, so
    * everything here hugs z ~ -9 — a metre proud of the wall, clear of the
-   * mesh, and still inside the frame's right edge (the milk cans at nx 0.91
-   * and 0.95 are the tightest fit in the whole staging). The wheelbarrow sits
-   * on the outside of the path's bend where the cart track leaves the doors. */
+   * mesh. The wheelbarrow sits on the outside of the path's bend where the
+   * cart track leaves the doors.
+   *
+   * Critic defect 7: the milk cans used to sit at nx 0.91/0.95 — this file's
+   * own former comment called it "the tightest fit in the whole staging" —
+   * sliced by the frame edge with no overlapping form in front of them to
+   * read as a deliberate crop. Pulled in from (12.9,-9.1)/(13.7,-9.5) to
+   * (11.8,-8.6)/(12.5,-9.0), both inside nx 0.85.
+   *
+   * Critic defect 5: the trough was too small to register at this distance —
+   * scaled up 1.6x, obstacle/shadow radius scaled to match. */
   _placeBarnYard() {
     this._place(makeCrateStack(), 5.9, -9.3, 0.9, 0.35)
-    this._placeDecor(makeMilkCan(), 12.9, -9.1, 0.4, 0.8)
-    this._placeDecor(makeMilkCan(), 13.7, -9.5, 0.4, -0.5)
-    this.addObstacle(13.3, -9.3, 0.75) // the pair, as one blocking circle
+    this._placeDecor(makeMilkCan(), 11.8, -8.6, 0.4, 0.8)
+    this._placeDecor(makeMilkCan(), 12.5, -9.0, 0.4, -0.5)
+    this.addObstacle(12.15, -8.8, 0.75) // the pair, as one blocking circle
     this._place(makeWheelbarrow(), 6.84, -3.16, 0.6, -0.9)
-    this._place(buildTrough(), 9.3, -2.9, 0.9, 0.35 + Math.PI / 2)
+    const trough = buildTrough()
+    trough.scale.setScalar(1.6)
+    this._place(trough, 9.3, -2.9, 0.9 * 1.6, 0.35 + Math.PI / 2)
   }
 
   /** Three perches, deliberately spread left / centre / right rather than
@@ -1414,18 +1531,20 @@ export class World {
   }
 
   /** Grouped by color so each drift reads as one accent mass rather than
-   * mixed-color confetti. Both drifts now sit in the mid-band between the coop
-   * (-6,-2) and the barn (11,-14) — the dead diagonal the critic's "six props
-   * on an acre" note was really about. The old third drift at (5,32) and the
-   * yellow one at (-12,8) were behind the start camera's near ground edge
-   * (z ~ +6) and had never been on screen at all; a decoration nobody can see
-   * is not decoration, so they are folded into these two. Spread is halved to
-   * 5 (a +/-2.5 box) so each drift is a clump you could put a hand over, not a
-   * sprinkle across a quarter of the field. */
+   * mixed-color confetti. Spread is halved to 5 (a +/-2.5 box) so each drift
+   * is a clump you could put a hand over, not a sprinkle across a quarter of
+   * the field.
+   *
+   * Critic defect 5: both drifts used to sit on the coop-to-barn diagonal,
+   * which is why the frame read cluttered in a band and vacant everywhere
+   * else — roughly 30% of the frame (the lower-right quadrant beyond the
+   * road) was dead. The purple drift is moved out of that diagonal into the
+   * right foreground (x 6..12, z 2..8); the red drift stays put as the one
+   * accent that still ties the coop yard together. */
   _placeFlowerTufts() {
     const drifts = [
       { x: -0.5, z: -5.5, spread: 5, count: 6, color: 0xe6483c },
-      { x: 5, z: -10.5, spread: 5, count: 6, color: 0xc060d6 },
+      { x: 9, z: 5, spread: 5, count: 6, color: 0xc060d6 },
     ]
     for (const d of drifts) {
       for (let n = 0; n < d.count; n++) {
@@ -1454,22 +1573,26 @@ export class World {
     }
   }
 
-  /** The low-rock-and-grass note that ties the two flower drifts together, at
-   * (3,-8) — dead centre of the coop-to-barn diagonal, nx 0.29 / ny -0.18 in
-   * the opening frame. Rocks bring the one cool grey in that whole third of
-   * the picture and the tufts break the ground plane between them; together
-   * they are the reason the eye now travels from the coop to the barn over
-   * something instead of across a green void. Tufts register no obstacle —
-   * they are grass, and a chicken walks through grass. */
+  /** The low-rock-and-grass note that ties the ground plane together with
+   * some incident. Rocks bring the one cool grey in that stretch of the
+   * picture and the tufts break the ground plane between them. Tufts
+   * register no obstacle — they are grass, and a chicken walks through grass.
+   *
+   * Critic defect 5: this used to sit at (3,-8), dead centre of the
+   * coop-to-barn diagonal — every staged prop lived on that one line, which
+   * is why the frame read cluttered in a band and vacant everywhere else.
+   * Shifted (+6.1,+12.4) into the right foreground (x 6..12, z 2..8), the
+   * quadrant beyond the road that used to hold nothing but one trough and one
+   * rock. */
   _placeMidbandCluster() {
-    const rocks = [{ x: 2.4, z: -8.4, s: 1.15 }, { x: 3.9, z: -7.2, s: 0.8 }]
+    const rocks = [{ x: 8.5, z: 4.0, s: 1.15 }, { x: 10.0, z: 5.4, s: 0.8 }]
     let seed = 900
     for (const r of rocks) {
       const rock = buildRock(seed++)
       rock.scale.setScalar(r.s)
       this._place(rock, r.x, r.z, 0.45 * r.s, seed * 0.7)
     }
-    const tufts = [[1.9, -7.0], [3.1, -6.4], [4.6, -8.3], [2.9, -9.4], [4.9, -6.6], [1.5, -8.9]]
+    const tufts = [[8.0, 5.4], [9.2, 6.0], [10.7, 4.1], [9.0, 3.0], [11.0, 5.8], [7.6, 3.5]]
     for (const [x, z] of tufts) {
       const tuft = buildGrassTuft(seed++)
       tuft.scale.setScalar(1.1 + (seed % 5) * 0.08)
@@ -1507,29 +1630,39 @@ export class World {
    * z=-9 and x=11.2 at z=-2, so every control point after the first was
    * outside the picture: the farm's main road was invisible at start, and so
    * were any ruts drawn in it. It now leaves the doors and sweeps south-west
-   * across the near field to exit the bottom-left corner, which puts it in
-   * frame for its whole visible length (nx 0.77 at the barn down to -0.12 as
-   * it leaves) and drags the eye from the barn back to the coop yard.
+   * across the near field, in frame for its whole visible length (nx 0.77 at
+   * the barn down to -0.12 as it leaves).
    *
-   * It also passes within ~1.2 of the dozing pig at (-3,6) — half the road's
-   * width — so the pig is now literally lying in the path, which is what
-   * DESIGN.md asked for and what a cartoon would draw. The road is a decal and
-   * registers no obstacle, so none of this narrows the walkable corridor. */
+   * Critic defect 2: the old tail exited the bottom-left corner — a leading
+   * line pointing at nothing — and at 3.8 wide with ruts at a 0.95 offset it
+   * was also the single highest-chroma shape in the frame, out-valuing the
+   * barn, with the ruts sitting near the road's crown instead of under the
+   * wheels. Narrowed to 2.6 wide, ruts pushed out to 1.1 (~0.85 of the new
+   * half-width), and the fill desaturated from bright tan toward the field's
+   * warm-shadow family (0x9c7b4e). The tail's last two control points now
+   * route it behind the left repoussoir wing at (-14,16) — see
+   * _placeForegroundFrame — instead of off the bottom-left corner.
+   *
+   * It also passes within ~1.2 of the dozing pig, now staged at (-2,1) (see
+   * _placePig / critic defect 6) — half the road's width — so the pig is
+   * literally lying in the path, which is what DESIGN.md asked for and what a
+   * cartoon would draw. The road is a decal and registers no obstacle, so
+   * none of this narrows the walkable corridor. */
   _placePath() {
     const pts = [
       { x: 11.2, z: -10.8 }, // barn doors
       { x: 9.0, z: -8.5 },
       { x: 5.0, z: -5.0 },
       { x: 1.0, z: -1.0 },
-      { x: -2.5, z: 3.5 }, // over the pig
+      { x: -2.0, z: 1.6 }, // over the pig
       { x: -5.5, z: 9.5 },
-      { x: -11.5, z: 17.5 },
-      { x: -20, z: 28 },
+      { x: -13, z: 10 },
+      { x: -19, z: 14 },
     ]
-    const path = buildPathMesh(pts, 3.8, { ink: INK_WEIGHT.DECAL })
+    const path = buildPathMesh(pts, 2.6, { color: 0x9c7b4e, ink: INK_WEIGHT.DECAL })
     path.receiveShadow = true
     this.scene.add(path)
-    this.scene.add(buildWagonRuts(pts, 0.95))
+    this.scene.add(buildWagonRuts(pts, 1.1))
   }
 
   /** Drawn boundary across the empty left-center third — the largest dead
@@ -1561,14 +1694,25 @@ export class World {
    * frustum so crowns break the top edge and trunks break the left/right
    * edges. Built from buildWingFlat (not a scaled makeTree()) so the mass
    * scallops, punches sky-gaps, and carries a trunk into the bottom edge and
-   * a lit-side rim tint instead of cropping to one featureless canopy sphere. */
+   * a lit-side rim tint instead of cropping to one featureless canopy sphere.
+   *
+   * Critic defect 1: against the real start camera ((-1,9.5,23) -> (-1.5,1.8,-7),
+   * see the START-VIEW note at the top of this file) the left wing at
+   * (-10,12) scaled 2.0 sat only ~11 units out, over-subtended the left edge,
+   * and its near-black 0x24541f base read as a lens smudge rather than a
+   * tree — while bisecting the scarecrow and swallowing SWING_TREE's tire
+   * swing. Pushed back/out to (-14,16) at a smaller 1.5 scale so the
+   * scallops and sky-gaps buildWingFlat draws actually land inside frame; the
+   * third spot at (-30,14) is deleted outright — it never entered frame at
+   * any camera this file has used. Base/rim lifted a full step lighter
+   * (0x24541f/0x3d7a33 -> 0x3a6b2c/0x5a9440) so individual lobes separate
+   * from the field instead of reading as one black mass. The scarecrow and
+   * tire swing were moved to x >= -8 (see _placeCoopYard / GROVE) so they
+   * clear this wing's silhouette entirely. */
   _placeForegroundFrame() {
-    // Start camera: (2,14,34) → (2,2.5,-14), h-half-FOV ≈ 28°. Side edges at
-    // forward distance d sit at |x-2| ≈ 0.54·d, so wings must hug x≈-10/+15
-    // at z≈12-16 to actually break the frame; the old ±24-30 never rendered.
-    const spots = [{ x: -10, z: 12, s: 2.0 }, { x: 14.5, z: 10, s: 1.9 }, { x: -30, z: 14, s: 1.4 }]
+    const spots = [{ x: -14, z: 16, s: 1.5 }, { x: 14.5, z: 10, s: 1.9 }]
     for (const spot of spots) {
-      const wing = buildWingFlat(0x24541f, 0x3d7a33)
+      const wing = buildWingFlat(0x3a6b2c, 0x5a9440)
       wing.scale.setScalar(spot.s)
       this._place(wing, spot.x, spot.z, 1.4 * spot.s, Math.random() * Math.PI * 2)
     }

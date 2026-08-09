@@ -41,6 +41,36 @@ export const INK_WEIGHT = {
 const INK_MAX_FRACTION = 0.32
 
 /**
+ * Interior ink sits one step under the silhouette that carries it.
+ *
+ * A drawn cel has TWO pen weights on every object: the heavy contour that cuts
+ * the form out of the background, and a lighter line for every break inside it
+ * — where the gambrel meets the wall, where the door frame meets the door. A
+ * silhouette-only render has the first and not the second, which is why it
+ * reads as shaded 3D no matter how flat the colour is. 0.56 puts HERO 4.5 at
+ * 2.5 and PROP 3.4 at 1.9: plainly present, plainly subordinate.
+ */
+const INTERIOR_RATIO = 0.56
+const INTERIOR_MIN_PIXELS = 1.5
+const interiorWeight = (pixels) => Math.max(INTERIOR_MIN_PIXELS, pixels * INTERIOR_RATIO)
+
+/**
+ * Dihedral angle (degrees) above which an edge counts as a form break.
+ *
+ * Not 35–40. Every curved surface here is a low-poly primitive, and the facet
+ * step on the ones that matter lands just under 45°: an 8-sided cylinder is
+ * 45.0, a 9-sided cone a little under. At 38 a fence post's ROUND neighbours
+ * get striped with tessellation lines — ink drawn on an artifact of the mesh,
+ * which is worse than no ink. 46 keeps every real break (box corners, cap rims,
+ * extrude faces and lathe profile corners are all ≥ 60°) and no fake ones.
+ * Override per call with `interiorAngle` if a model wants the tighter read.
+ */
+const INTERIOR_ANGLE = 46
+
+/** Runaway guard: a mesh this creased is a tessellation, not a set of forms. */
+const INTERIOR_MAX_EDGES = 4000
+
+/**
  * Darkest ramp step — the multiplier the dark cel plane keeps.
  *
  * At 0.55 the dark plane was only 45% down from the lit one, and world.js's
@@ -71,6 +101,7 @@ const gradientMaps = new Map()
 // Keyed by source geometry so hulls die with the model they belong to (eggs are
 // spawned and disposed constantly).
 const hullGeometries = new WeakMap()
+const creaseGeometries = new WeakMap()
 const inkStyles = new Map()
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v)
@@ -194,6 +225,39 @@ void main() {
 }
 `
 
+// Interior lines are real crease edges expanded into camera-facing quads. The
+// same clip-space, w-scaled trick as the hull, so an interior line is the same
+// number of pixels wide at 5 m and at 50 m — a pen weight, not a wireframe.
+// (LineSegments cannot do this: `linewidth` is 1px on every desktop driver.)
+const INTERIOR_VERT = /* glsl */ `
+uniform vec2 uResolution;
+uniform float uPixels;
+attribute vec3 aOther;
+attribute float aSide;
+#include <fog_pars_vertex>
+
+void main() {
+  vec4 mv = modelViewMatrix * vec4( position, 1.0 );
+  vec4 clip = projectionMatrix * mv;
+  vec4 far = projectionMatrix * modelViewMatrix * vec4( aOther, 1.0 );
+  // Behind the eye w flips sign and the screen-space direction inverts; the
+  // clamp keeps a segment straddling the near plane from whipping across frame.
+  vec2 here = ( clip.xy / max( clip.w, 1e-4 ) ) * uResolution;
+  vec2 there = ( far.xy / max( far.w, 1e-4 ) ) * uResolution;
+  vec2 along = here - there;
+  float len = length( along );
+  if ( len > 1e-5 ) {
+    vec2 across = vec2( -along.y, along.x ) / len;
+    // aSide * uPixels / res * w == half of uPixels pixels, either side.
+    clip.xy += across * ( aSide * uPixels ) * ( clip.w / uResolution );
+  }
+  gl_Position = clip;
+  #ifdef USE_FOG
+    vFogDepth = - mv.z;
+  #endif
+}
+`
+
 /** Colour + weight uniform objects, shared by reference across every shell. */
 function inkStyle(color, pixels) {
   const key = `${new THREE.Color(color).getHexString()}|${q(pixels)}`
@@ -228,6 +292,97 @@ function inkMaterial(color, pixels, flat) {
     polygonOffsetFactor: 1,
     polygonOffsetUnits: 1,
   })
+}
+
+/**
+ * Interior-line material. Coplanar with the surface it is drawn on, so it
+ * needs the depth bias pulled TOWARD the camera (negative offset) — the hull's
+ * positive offset pushes away, which is the opposite problem. Depth test stays
+ * on so a line is still hidden by whatever stands in front of it; depth write
+ * stays off so two lines crossing don't fight.
+ */
+function interiorMaterial(color, pixels) {
+  const style = inkStyle(color, pixels)
+  const uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog])
+  uniforms.uResolution = inkResolution
+  uniforms.uPixels = style.uPixels
+  uniforms.uColor = style.uColor
+  return new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader: INTERIOR_VERT,
+    fragmentShader: INK_FRAG,
+    side: THREE.DoubleSide,
+    fog: true,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -4,
+  })
+}
+
+// ------------------------------------------------------------- interior lines
+
+/** [which endpoint, which side] for the two triangles of one line quad. */
+const QUAD = [[0, -1], [1, -1], [1, 1], [0, -1], [1, 1], [0, 1]]
+
+/**
+ * Crease edges of `source` as a quad strip: each vertex carries the segment's
+ * OTHER endpoint plus a side sign, which is everything the vertex shader needs
+ * to lay a constant-pixel-width line down the edge.
+ * @returns {THREE.BufferGeometry|null} null when the mesh has no form breaks.
+ */
+function buildCreases(source, thresholdAngle) {
+  const edges = new THREE.EdgesGeometry(source, thresholdAngle)
+  const line = edges.attributes.position
+  const count = line.count >> 1
+  if (!count || count > INTERIOR_MAX_EDGES) return (edges.dispose(), null)
+  const position = new Float32Array(count * 18)
+  const other = new Float32Array(count * 18)
+  const side = new Float32Array(count * 6)
+  const ends = [new THREE.Vector3(), new THREE.Vector3()]
+  for (let e = 0; e < count; e++) {
+    ends[0].fromBufferAttribute(line, e * 2)
+    ends[1].fromBufferAttribute(line, e * 2 + 1)
+    QUAD.forEach(([end, s], k) => {
+      const i = (e * 6 + k) * 3
+      ends[end].toArray(position, i)
+      ends[1 - end].toArray(other, i)
+      side[e * 6 + k] = s
+    })
+  }
+  edges.dispose()
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.BufferAttribute(position, 3))
+  geo.setAttribute('aOther', new THREE.BufferAttribute(other, 3))
+  geo.setAttribute('aSide', new THREE.BufferAttribute(side, 1))
+  geo.computeBoundingSphere()
+  // The quads widen in screen space after culling is decided; a little slack
+  // stops a line popping off at the edge of frame.
+  if (geo.boundingSphere) geo.boundingSphere.radius *= 1.08
+  return geo
+}
+
+function creasesFor(geometry, thresholdAngle) {
+  let variants = creaseGeometries.get(geometry)
+  if (!variants) creaseGeometries.set(geometry, (variants = new Map()))
+  const key = q(thresholdAngle)
+  if (!variants.has(key)) variants.set(key, buildCreases(geometry, thresholdAngle))
+  return variants.get(key)
+}
+
+function interiorFor(mesh, color, pixels, thresholdAngle) {
+  const geo = creasesFor(mesh.geometry, thresholdAngle)
+  if (!geo) return null
+  const lines = new THREE.Mesh(geo, interiorMaterial(color, pixels))
+  lines.name = 'interior-ink'
+  lines.userData.isOutline = true
+  lines.userData.isInteriorInk = true
+  lines.userData.inkColor = color
+  lines.castShadow = false
+  lines.receiveShadow = false
+  // After the surface it sits on, so the equal-depth bias resolves one way.
+  lines.renderOrder = 1
+  return lines
 }
 
 // ------------------------------------------------------------------ ink hulls
@@ -375,16 +530,32 @@ function outlineFor(mesh, color, pixels, maxWorldWidth, flat) {
  * Outlines are parented to their source mesh, so they follow procedural
  * animation for free. Meshes with `userData.noOutline` (pupils, nostrils) skip.
  * @param {THREE.Object3D} object3d
- * @param {{color?: number, thickness?: number, pixels?: number, flat?: boolean}} [opts]
+ * @param {{color?: number, thickness?: number, pixels?: number, flat?: boolean,
+ *   interior?: boolean, interiorPixels?: number, interiorAngle?: number}} [opts]
  *   `thickness` is legacy world-space weight and is ignored — ink weight is a
  *   global constant now. `pixels` places the object in the weight hierarchy;
  *   use `INK_WEIGHT`. `flat: true` inks a ground decal (path, patch disc) along
  *   its boundary instead of its face normals — see buildHull.
+ *
+ *   `interior: true` adds the SECOND pen: every form break inside the
+ *   silhouette (roof-to-wall, tank-to-leg, door frame to door) gets a crease
+ *   line at `interiorPixels`, one weight step under the contour. Opt in for
+ *   anything the camera gets near; leave it off for treeline and horizon props,
+ *   where an extra line per facet is cost with nothing to show for it. Meshes
+ *   can veto individually with `userData.noInteriorInk`.
  * @returns {THREE.Object3D} the same object, for chaining.
  */
 export function addOutline(
   object3d,
-  { color = INK, thickness = 0.035, pixels = INK_PIXELS, flat = false } = {}
+  {
+    color = INK,
+    thickness = 0.035,
+    pixels = INK_PIXELS,
+    flat = false,
+    interior = false,
+    interiorPixels = interiorWeight(pixels),
+    interiorAngle = INTERIOR_ANGLE,
+  } = {}
 ) {
   void thickness // signature kept; world-space weight is what we are fixing.
   object3d.updateWorldMatrix(true, true)
@@ -396,7 +567,15 @@ export function addOutline(
     targets.push(o)
   })
   const maxWorldWidth = inkWidthCap(object3d)
-  for (const mesh of targets) mesh.add(outlineFor(mesh, color, pixels, maxWorldWidth, flat))
+  // A flat decal has one plane and no interior: every crease it owns is already
+  // its boundary, which the hull draws.
+  const inkInside = interior && !flat
+  for (const mesh of targets) {
+    mesh.add(outlineFor(mesh, color, pixels, maxWorldWidth, flat))
+    if (!inkInside || mesh.userData.noInteriorInk) continue
+    const lines = interiorFor(mesh, color, interiorPixels, interiorAngle)
+    if (lines) mesh.add(lines)
+  }
   return object3d
 }
 
@@ -420,7 +599,10 @@ export function setInkWeight(object3d, pixels) {
       return
     }
     o.visible = true
-    o.material.uniforms.uPixels = inkStyle(o.userData.inkColor ?? INK, pixels).uPixels
+    // Interior lines keep their step under the contour as the object recedes,
+    // so thinning a treeline never inverts the hierarchy on the way to zero.
+    const weight = o.userData.isInteriorInk ? interiorWeight(pixels) : pixels
+    o.material.uniforms.uPixels = inkStyle(o.userData.inkColor ?? INK, weight).uPixels
   })
   return object3d
 }

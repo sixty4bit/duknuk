@@ -28,14 +28,19 @@ const RING_WALL_HEIGHT = 0.35
 // is enough resolution for this to actually hide the per-cell grid.
 const FEATHER_PX = 3.5
 
-// Lush must read as the *richest* grass in the picture — deeper and more
-// saturated than the field base (world.js's ground tones run ~0x86c057 to
-// 0xb2d668) so a full patch reads as the hero mechanic's payoff, not a
-// bleached or freshly-mown spot lighter than the grass around it. Grazed-out
+// Lush must read as the *richest* grass in the picture — visibly higher
+// value AND saturation than the field base (world.js's ground tones run
+// ~0x86c057 to 0xb2d668, HSV V~0.75-0.84 / S~0.45-0.57), not just a deeper
+// hue that reads as the same green at a glance. A full patch is the hero
+// mechanic's payoff and must read as a bright disc, not an outline with an
+// interior indistinguishable from the surrounding grass. #48c91c carries
+// V≈0.79 / S≈0.86 — roughly +13-15% over the pre-fix #57b02c (V≈0.69,
+// S≈0.75) and pushed a few degrees cooler in hue — so it clears the field's
+// own V/S range on both axes instead of landing inside it. Grazed-out still
 // fades through dusty gold to dark umber. Tuned against the *decoded* (sRGB
 // colorSpace) texture output, not raw canvas hex — see the colorSpace
 // assignment in _buildVisuals.
-const LUSH = new THREE.Color('#57b02c')
+const LUSH = new THREE.Color('#48c91c')
 const THIN = new THREE.Color('#cf9f2e')
 const BARE = new THREE.Color('#96652f')
 
@@ -96,15 +101,27 @@ function seededRand(seed) {
   return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296)
 }
 
+// Dominant lobe count for the scalloped boundary — a single low frequency
+// in this range (not the higher secondary jitter below) is what reads as
+// hand-drawn scallops instead of a mechanically-perfect circle.
+const SCALLOP_LOBES = 7
+const SCALLOP_AMPLITUDE = 0.08
+
 // A stable (non-random) wobble so the boundary reads as hand-drawn but never
 // re-jitters between rebuilds. Both the fill disc and the ink-outline rim
 // wall are built from these exact points, so they can never drift apart —
-// the fill can neither bleed past nor fall short of the line.
+// the fill can neither bleed past nor fall short of the line. The primary
+// term is the low-frequency scallop (SCALLOP_LOBES lobes, SCALLOP_AMPLITUDE
+// of the radius) that makes the ring read as drawn rather than a perfect
+// circle; the secondary term is a smaller, higher-frequency wobble layered
+// on top purely for hand-drawn irregularity, kept subordinate in amplitude
+// so it doesn't wash out the scallop read.
 function buildWobbledOutline(radius, segments = 72) {
   const centers = []
   for (let s = 0; s <= segments; s++) {
     const t = (s / segments) * Math.PI * 2
-    const wobble = 1 + 0.05 * Math.sin(t * 5 + 1.3) + 0.025 * Math.sin(t * 11 + 0.6)
+    const wobble =
+      1 + SCALLOP_AMPLITUDE * Math.sin(t * SCALLOP_LOBES + 1.3) + 0.025 * Math.sin(t * 17 + 0.6)
     const r = radius * wobble
     centers.push([Math.cos(t) * r, Math.sin(t) * r])
   }
@@ -119,10 +136,10 @@ function buildDiscGeometry(radius, centers) {
   const positions = [0, 0, 0]
   const uvs = [0.5, 0.5]
   // Normalized against a diameter padded past the wobble's outward peak
-  // (1 + 0.05 + 0.025 = 1.075x radius) so outward-wobble arcs never push uv
-  // to/past 1.0 and clamp — that clamp was stretching the edge texel
-  // radially outward, smearing fill past the boundary on those arcs.
-  const uvDiameter = radius * 2 * 1.08
+  // (1 + SCALLOP_AMPLITUDE + 0.025 = 1.105x radius) so outward-wobble arcs
+  // never push uv to/past 1.0 and clamp — that clamp was stretching the edge
+  // texel radially outward, smearing fill past the boundary on those arcs.
+  const uvDiameter = radius * 2 * 1.12
   for (const [cx, cz] of centers) {
     positions.push(cx, 0, cz)
     uvs.push(cx / uvDiameter + 0.5, cz / uvDiameter + 0.5)
