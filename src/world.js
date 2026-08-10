@@ -1063,86 +1063,48 @@ function fadeOutlineWithDistance(tree, t) {
   return tree
 }
 
-/** The start camera's eye point, in world space. main.js opens at (-1, 9.5, 23)
- * looking at (-1.5, 1.8, -7) — see the START-VIEW note at the top of this file.
- * The wing flats orient themselves against it (see _placeForegroundFrame), so
- * if that camera moves this constant is the one thing that has to move with it. */
-const START_EYE = new THREE.Vector3(-1, 9.5, 23)
-
-/** One deckled tree silhouette as a closed polygon in local XY: origin at
- * ground contact, +Y up, canopy centred over the trunk. The scallop is a sum
- * of two integer-frequency sines plus a seeded per-vertex nudge, so no two
- * wings share a contour and none of them reads as a circle.
- *
- * The canopy sweep deliberately stops short of the horizontal on both sides
- * (195deg round the top to -15deg), which leaves the trunk standing clear
- * below it instead of being swallowed — the exact failure the sphere-lobe
- * version had from any raised camera. */
-function wingSilhouettePoints(seed) {
-  const rnd = seededRand(seed)
-  const [trunkH, halfTrunk, cy, R] = [2.3, 0.36, 4.35, 2.6]
-  const pts = [{ x: -halfTrunk, y: 0 }, { x: -halfTrunk * 0.8, y: trunkH }]
-  const steps = 40
-  for (let i = 0; i <= steps; i++) {
-    const deg = 195 - (i / steps) * 210
-    const a = THREE.MathUtils.degToRad(deg)
-    const scallop = 1 + Math.sin(a * 5) * 0.13 + Math.sin(a * 11 + 1.3) * 0.06 + (rnd() - 0.5) * 0.07
-    pts.push({ x: Math.cos(a) * R * 1.15 * scallop, y: cy + Math.sin(a) * R * 0.94 * scallop })
-  }
-  pts.push({ x: halfTrunk * 0.8, y: trunkH }, { x: halfTrunk, y: 0 })
-  return pts
-}
-
-function buildWingCard(points, hex, { ink = 0, z = 0 } = {}) {
-  const shape = new THREE.Shape(points.map((p) => new THREE.Vector2(p.x, p.y)))
-  const mat = toonMaterial(hex, { steps: 2, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 })
-  mat.side = THREE.DoubleSide
-  const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape, 2), mat)
-  mesh.position.z = z
-  if (ink > 0) addOutline(mesh, { flat: true, pixels: ink, color: 0x120d06 })
-  else mesh.userData.noOutline = true
-  return mesh
-}
-
 /** Dedicated near-camera wing flat for the repoussoir frame — NOT a scaled
- * makeTree().
+ * makeTree(). At 2.4-2.6x scale, 12-14u from camera, a single smooth canopy
+ * sphere crops into a featureless kidney-shaped blob: no scalloped edge, no
+ * sky-gaps, no trunk in frame, and a near-black tint swallows makeTree's own
+ * ink outline so the mass has no drawn edge at all. This builds 7 overlapping
+ * canopy lobes by hand around a trunk that lands at ground level (so it reads
+ * as entering the bottom frame edge at this proximity), deliberately skips
+ * lobes at ~180deg and ~280deg so two sky-gaps punch through the mass, and
+ * tints a lit-side subset of lobes toward `rimHex` (lighter than `baseHex`)
+ * so the silhouette holds a shape instead of reading as a hole in the frame.
  *
- * Critic defect 4 (this pass): the previous version built 7 overlapping canopy
- * SPHERES (radius 1.3-1.9, height 2.2-3.9) around a 2.2-unit trunk. From the
- * low start camera that works; from the mid-game aerial at y=26 the lobes
- * completely occlude the trunk, the deliberate 180/280deg sky-gaps never face
- * the eye, and the two wings read as featureless dark-green boulders eating
- * ~20% of the frame with no readable edge. A solid of revolution cannot hold a
- * drawn contour from an arbitrary angle; only a card can.
- *
- * So this is a flat scalloped silhouette card — one ShapeGeometry, no volume —
- * plus a smaller lighter card sitting a hair in front of it on the sun side.
- * It is the same treatment the reference gives every piece of foreground
- * foliage: a drawn shape with a deckled edge and one interior value break.
- * Two consequences, both wanted:
- *  - the deckled contour is identical from every azimuth, so the wing keeps a
- *    legible edge wherever the player orbits, and
- *  - seen from directly above the card foreshortens to a sliver, so the aerial
- *    shot gets its frame back without needing a per-frame camera-elevation
- *    hide (World has no update hook — see CONTRACTS.md — so a gate would have
- *    had to be wired through main.js, which is not this file's to touch).
- * DoubleSide because the card has no back, and the caller yaws it toward the
- * start camera. */
-function buildWingFlat(baseHex, rimHex, seed = 5100) {
+ * Round 10 replaced this with a flat scalloped silhouette card to save the
+ * mid-game aerial shot, where the lobes read as boulders — but the card read
+ * as a matte cutout from the START view, the shot the game opens on, and
+ * carl-fyffe called the trees "significantly worse" on sight. The lobed
+ * build is back (tree regression card); if the aerial framing needs help it
+ * gets its own card, not a start-view trade. */
+function buildWingFlat(baseHex, rimHex) {
   const g = new THREE.Group()
-  const outline = wingSilhouettePoints(seed)
-  g.add(buildWingCard(outline, baseHex, { ink: INK_WEIGHT.HERO }))
-  // Lit lobe: the same contour, shrunk and pushed up-and-right into the
-  // sun-facing quadrant so it kisses the outer edge on one side and leaves the
-  // rest of the mass in shadow — a value break inside the silhouette, not a
-  // concentric inner blob. Inkless: the drawn edge belongs to the silhouette.
-  // slice(2, -2) drops the four trunk points — the lit shape is canopy only,
-  // otherwise it comes out as a small floating tree inside the big one.
-  const lit = wingSilhouettePoints(seed + 1)
-    .slice(2, -2)
-    .map((p) => ({ x: p.x * 0.62 + 1.0, y: p.y * 0.62 + 1.45 }))
-  g.add(buildWingCard(lit, rimHex, { z: 0.04 }))
-  return g
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.5, 2.2, 8), toonMaterial(0x4a2f1a, { steps: 3 }))
+  trunk.position.y = 0.9
+  g.add(trunk)
+  const baseMat = toonMaterial(baseHex, { steps: 3 })
+  const rimMat = toonMaterial(rimHex, { steps: 3 })
+  // angle (deg, gaps deliberately left at ~180 and ~280), radial offset,
+  // height, radius, lit (sun-facing side gets the rim tint)
+  const lobes = [
+    { a: 20, r: 0.9, h: 2.6, s: 1.5, lit: true },
+    { a: 70, r: 1.3, h: 3.4, s: 1.7, lit: false },
+    { a: 130, r: 1.1, h: 2.2, s: 1.4, lit: false },
+    { a: 230, r: 1.0, h: 3.0, s: 1.6, lit: false },
+    { a: 320, r: 0.8, h: 2.4, s: 1.3, lit: true },
+    { a: 350, r: 1.4, h: 3.8, s: 1.9, lit: true },
+    { a: 40, r: 0.5, h: 3.9, s: 1.2, lit: true },
+  ]
+  for (const lo of lobes) {
+    const rad = THREE.MathUtils.degToRad(lo.a)
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(lo.s, 8, 7), lo.lit ? rimMat : baseMat)
+    mesh.position.set(Math.cos(rad) * lo.r, lo.h, Math.sin(rad) * lo.r)
+    g.add(mesh)
+  }
+  return addOutline(g, { color: 0x120d06, thickness: 0.05 })
 }
 
 // ------------------------------------------------------------- crop patch
@@ -2277,23 +2239,11 @@ export class World {
    * file has used. The scarecrow and tire swing were moved to x >= -8 (see
    * _placeCoopYard / GROVE) so they clear this wing's silhouette entirely. */
   _placeForegroundFrame() {
-    const spots = [{ x: -14, z: 16, s: 1.5, seed: 5100 }, { x: 14.5, z: 10, s: 1.9, seed: 5140 }]
+    const spots = [{ x: -14, z: 16, s: 1.5 }, { x: 14.5, z: 10, s: 1.9 }]
     for (const spot of spots) {
-      // Base/rim rotated into the new olive-sage family with everything else
-      // (critic defect 1): 0x3a6b2c/0x5a9440 (H100 S42 L30 / H101 S45 L45) ->
-      // 0x3f4d2f/0x5c6b42 (H82 S24 L25 / H83 S24 L34). Still the darkest mass
-      // in frame — repoussoir wants that — but it is now a dark OLIVE rather
-      // than a dark kelly green, and the rim step is a value step inside one
-      // hue instead of a second saturated colour.
-      const wing = buildWingFlat(0x3f4d2f, 0x5c6b42, spot.seed)
+      const wing = buildWingFlat(0x3a6b2c, 0x5a9440)
       wing.scale.setScalar(spot.s)
-      // The card is flat, so its yaw is not decoration: it faces the start eye
-      // (deterministic, replacing a Math.random() spin that could turn a
-      // silhouette card edge-on to the opening shot). From the mid-game aerial
-      // the same card foreshortens to a sliver, which is the point — see
-      // buildWingFlat.
-      const yaw = Math.atan2(START_EYE.x - spot.x, START_EYE.z - spot.z)
-      this._place(wing, spot.x, spot.z, 1.4 * spot.s, yaw)
+      this._place(wing, spot.x, spot.z, 1.4 * spot.s, Math.random() * Math.PI * 2)
     }
   }
 
