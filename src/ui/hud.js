@@ -326,7 +326,7 @@ export class HUD {
     this.patchEl.style.top = `${screenY}px`
     this.patchEl.querySelector('.duk-meter-fill').style.width = `${pct}%`
     this.patchEl.querySelector('.duk-meter-fill').style.background = meterColor(fullness)
-    this.patchEl.querySelector('.duk-patch-label').textContent = `${pct}% grazed`
+    this.patchEl.querySelector('.duk-patch-label').textContent = `${100 - pct}% grazed`
     this.patchEl.style.display = 'flex'
     clearTimeout(this._patchHideTimer)
     this._patchHideTimer = setTimeout(() => {
