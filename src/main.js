@@ -30,8 +30,14 @@ controls.enableDamping = true
 controls.maxPolarAngle = Math.PI * 0.46
 controls.minPolarAngle = Math.PI * 0.34
 controls.minDistance = 10
-controls.maxDistance = 90
-controls.mouseButtons.LEFT = null // left button is the game's; pan/rotate on right/middle
+controls.maxDistance = 140
+// Left button is the game's. Camera: right-drag pans, middle-drag rotates,
+// wheel zooms, arrow keys pan.
+controls.mouseButtons.LEFT = null
+controls.mouseButtons.MIDDLE = THREE.MOUSE.ROTATE
+controls.mouseButtons.RIGHT = THREE.MOUSE.PAN
+controls.listenToKeyEvents(window)
+controls.keyPanSpeed = 24
 controls.update()
 
 const world = new World(scene)
@@ -81,6 +87,7 @@ function addChicken(coop, { tier = 0 } = {}) {
   hen.onEgg = (info) => handleEgg(hen, info)
   coop.chickens.push(hen)
   chickens.push(hen)
+  registerPickRoot(hen.mesh, 'chicken', hen)
   return hen
 }
 
@@ -126,18 +133,41 @@ function groundPoint(e) {
   return ray.ray.intersectPlane(groundPlane, hit) ? hit : null
 }
 
-/** Nearest chicken/coop to the picked ground point, within a grab radius. */
-function pickEntity(hit) {
+const pickRoots = new Map() // entity root mesh -> { kind, obj }
+
+function registerPickRoot(mesh, kind, obj) {
+  pickRoots.set(mesh, { kind, obj })
+}
+
+/** Mesh-first picking: what did the cursor actually TOUCH? A tall coop's roof
+ * projects far from its ground footprint, so ground-plane proximity mispicks —
+ * the click ray lands behind the building. Ink shells resolve to their owner
+ * by walking up the parent chain. Ground proximity remains only as a
+ * near-miss fallback for the small hens. */
+function pickEntity(e) {
+  const ndc = new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1)
+  ray.setFromCamera(ndc, camera)
+  for (const h of ray.intersectObjects([...pickRoots.keys()], true)) {
+    if (h.object.userData.isOutline) continue
+    let o = h.object
+    while (o && !pickRoots.has(o)) o = o.parent
+    if (o) return pickRoots.get(o)
+  }
+  const hit = groundPoint(e)
+  if (!hit) return null
   let best = null
   for (const hen of chickens) {
     const d = Math.hypot(hit.x - hen.position.x, hit.z - hen.position.z)
     if (d < 1.4 && (!best || d < best.d)) best = { kind: 'chicken', obj: hen, d }
   }
-  for (const coop of coops) {
-    const d = Math.hypot(hit.x - coop.position.x, hit.z - coop.position.z)
-    if (d < 2.6 && (!best || d < best.d)) best = { kind: 'coop', obj: coop, d }
-  }
   return best
+}
+
+function addCoop(pos) {
+  const coop = new Coop(scene, world, pos)
+  coops.push(coop)
+  registerPickRoot(coop.mesh, 'coop', coop)
+  return coop
 }
 
 // --- carry (RCT-style grab-and-place) --------------------------------------
@@ -242,8 +272,7 @@ function confirmPlacement(hit) {
   cancelPlacement()
   if (type === 'coop') {
     if (!economy.spend(Coop.COST)) return
-    const coop = new Coop(scene, world, { x: hit.x, z: hit.z })
-    coops.push(coop)
+    addCoop({ x: hit.x, z: hit.z })
     hud.toast(coops.length === 2 ? 'New coop! Eggs now wait at coops until you visit.' : 'New coop raised!')
   } else {
     if (!economy.spend(Feeder.COST)) return
@@ -364,8 +393,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
 // --- world seed ------------------------------------------------------------
 
 function seedStart() {
-  const coop = new Coop(scene, world, { x: -6, z: -2 })
-  coops.push(coop)
+  const coop = addCoop({ x: -6, z: -2 })
   select(addChicken(coop), null)
   hud.setHint('Click the grass to plant a patch for your chicken')
 }
@@ -374,7 +402,7 @@ function seedStart() {
 function seedMidgame() {
   economy.money = 800
   const spots = [{ x: -6, z: -2 }, { x: -24, z: 14 }, { x: 22, z: 16 }]
-  spots.forEach((s) => coops.push(new Coop(scene, world, s)))
+  spots.forEach((s) => addCoop(s))
   const layout = [
     { c: 0, tier: 3, px: -13, pz: 6, drain: 0.7 }, { c: 0, tier: 2, px: -2, pz: 8, drain: 0.35 },
     { c: 0, tier: 1, px: -12, pz: -8, drain: 0.1 }, { c: 1, tier: 3, px: -30, pz: 22, drain: 0.55 },
@@ -433,13 +461,23 @@ if (new URLSearchParams(location.search).get('demo') === 'midgame') seedMidgame(
 else seedStart()
 refreshShop()
 
+addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return
+  if (carry.hen) {
+    carry.valid = false
+    endCarry(null)
+  }
+  cancelPlacement()
+  select(null, null)
+})
+
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight
   camera.updateProjectionMatrix()
   renderer.setSize(innerWidth, innerHeight)
 })
 
-window.__duk = { world, chickens, coops, collectors, economy } // debug/testing handle
+window.__duk = { world, chickens, coops, collectors, economy, camera, screenXY, sel: () => ({ chicken: selectedChicken, coop: selectedCoop }) } // debug/testing handle
 
 const clock = new THREE.Clock()
 renderer.setAnimationLoop(() => {

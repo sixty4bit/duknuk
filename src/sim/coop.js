@@ -135,6 +135,7 @@ export class Coop {
 
   addProduct(v) {
     this.product += v
+    this._refreshIndicator()
   }
 
   collect() {
@@ -142,7 +143,17 @@ export class Coop {
     if (value <= 0) return 0
     this.product = 0
     spawnCollectPop(this.scene, this.door)
+    this._refreshIndicator()
     return value
+  }
+
+  /** Floating "eggs waiting" pill over the roof — the visit-me-now signal. */
+  _refreshIndicator() {
+    if (!this._indicator) this._indicator = buildIndicatorSprite(this.mesh)
+    this._indicator.visible = this.product > 0
+    if (!this._indicator.visible) return
+    drawIndicator(this._indicator.userData.canvas, this.product)
+    this._indicator.material.map.needsUpdate = true
   }
 
   setSelected(selected) {
@@ -162,4 +173,56 @@ export class Coop {
     const idx = this.world.obstacles.indexOf(this.obstacle)
     if (idx >= 0) this.world.obstacles.splice(idx, 1)
   }
+}
+
+// --- egg-value indicator -----------------------------------------------------
+
+/** Cream ink-bordered pill sprite parented over the coop roof. */
+function buildIndicatorSprite(coopMesh) {
+  const canvas = document.createElement('canvas')
+  canvas.width = 256
+  canvas.height = 96
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.colorSpace = THREE.SRGBColorSpace
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }))
+  sprite.scale.set(2.6, 0.975, 1)
+  sprite.position.set(0, 3.6, 0)
+  sprite.renderOrder = 9
+  sprite.visible = false
+  sprite.userData.canvas = canvas
+  coopMesh.add(sprite)
+  return sprite
+}
+
+function drawIndicator(canvas, value) {
+  const ctx = canvas.getContext('2d')
+  ctx.clearRect(0, 0, 256, 96)
+  ctx.fillStyle = '#fff4d6'
+  ctx.strokeStyle = '#1a1208'
+  ctx.lineWidth = 7
+  roundedPill(ctx, 6, 8, 244, 80)
+  ctx.fill()
+  ctx.stroke()
+  // the egg
+  ctx.fillStyle = '#ffffff'
+  ctx.beginPath()
+  ctx.ellipse(48, 48, 20, 26, 0, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.lineWidth = 5
+  ctx.stroke()
+  ctx.fillStyle = '#1a1208'
+  ctx.font = '900 46px "Arial Black", sans-serif'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(`$${value}`, 86, 52)
+}
+
+function roundedPill(ctx, x, y, w, h) {
+  const r = h / 2
+  ctx.beginPath()
+  ctx.moveTo(x + r, y)
+  ctx.arcTo(x + w, y, x + w, y + h, r)
+  ctx.arcTo(x + w, y + h, x, y + h, r)
+  ctx.arcTo(x, y + h, x, y, r)
+  ctx.arcTo(x, y, x + w, y, r)
+  ctx.closePath()
 }
