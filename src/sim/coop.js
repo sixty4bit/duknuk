@@ -147,10 +147,12 @@ export class Coop {
     return value
   }
 
-  /** Floating "eggs waiting" pill over the roof — the visit-me-now signal. */
+  /** Floating egg-value pill over the roof. Two reasons to show it: eggs are
+   * waiting (the visit-me-now signal), or the coop is selected (the player
+   * asked about this coop, so answer even when the answer is $0). */
   _refreshIndicator() {
     if (!this._indicator) this._indicator = buildIndicatorSprite(this.mesh)
-    this._indicator.visible = this.product > 0
+    this._indicator.visible = this.product > 0 || this.selected
     if (!this._indicator.visible) return
     drawIndicator(this._indicator.userData.canvas, this.product)
     this._indicator.material.map.needsUpdate = true
@@ -159,6 +161,7 @@ export class Coop {
   setSelected(selected) {
     this.selected = selected
     this._range.visible = selected
+    this._refreshIndicator()
   }
 
   inRange(x, z) {
