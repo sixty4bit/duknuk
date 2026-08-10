@@ -139,6 +139,25 @@ function registerPickRoot(mesh, kind, obj) {
   pickRoots.set(mesh, { kind, obj })
 }
 
+// Ground-proximity pick radii (world units), deliberately generous: at the
+// default camera a hen subtends ~25px, so a mesh-accurate pick demands
+// pixel-hunting and a near-miss used to fall through to the bare-ground
+// branch — which MOVES the selected hen's patch. Coops get a fallback too:
+// their mesh-ray pick fails when the click lands beside the building.
+const PICK_RADIUS = { chicken: 2.2, coop: 3.5 }
+// Wider than the pick radii: clicks in the ring between "picked it" and
+// "clearly meant the ground" do nothing at all, rather than relocating the
+// patch. Patch-move is the least reversible click on the farm, so it demands
+// clear ground.
+const PATCH_MOVE_CLEARANCE = { chicken: 3.2, coop: 4.5 }
+
+function nearAnyEntity(hit, radii) {
+  return (
+    chickens.some((c) => Math.hypot(hit.x - c.position.x, hit.z - c.position.z) < radii.chicken) ||
+    coops.some((c) => Math.hypot(hit.x - c.position.x, hit.z - c.position.z) < radii.coop)
+  )
+}
+
 /** Mesh-first picking: what did the cursor actually TOUCH? A tall coop's roof
  * projects far from its ground footprint, so ground-plane proximity mispicks —
  * the click ray lands behind the building. Ink shells resolve to their owner
@@ -158,7 +177,14 @@ function pickEntity(e) {
   let best = null
   for (const hen of chickens) {
     const d = Math.hypot(hit.x - hen.position.x, hit.z - hen.position.z)
-    if (d < 1.4 && (!best || d < best.d)) best = { kind: 'chicken', obj: hen, d }
+    if (d < PICK_RADIUS.chicken && (!best || d < best.d)) best = { kind: 'chicken', obj: hen, d }
+  }
+  // Hens win ties: they are smaller targets and the likelier intent when both
+  // are in reach (a hen pecking right beside her coop).
+  if (best) return best
+  for (const coop of coops) {
+    const d = Math.hypot(hit.x - coop.position.x, hit.z - coop.position.z)
+    if (d < PICK_RADIUS.coop && (!best || d < best.d)) best = { kind: 'coop', obj: coop, d }
   }
   return best
 }
@@ -383,6 +409,10 @@ renderer.domElement.addEventListener('pointerup', (e) => {
     Math.hypot(hit.x - c.patch.center.x, hit.z - c.patch.center.z) <= c.patch.radius)
   if (over) return hud.patchReadout({ screenX: e.clientX, screenY: e.clientY, fullness: over.patch.fullness() })
   if (!selectedChicken) return
+  // Near-miss dead zone: a click this close to a hen or coop was almost
+  // certainly aimed AT it, so failing to pick it must do nothing — not
+  // relocate the selected hen's patch out from under her.
+  if (nearAnyEntity(hit, PATCH_MOVE_CLEARANCE)) return
   if (!world.isWalkable(hit.x, hit.z)) return hud.toast('Can’t graze there!', { mood: 'sad' })
   if (selectedChicken.patch) selectedChicken.patch.moveTo({ x: hit.x, z: hit.z })
   else selectedChicken.patch = new Patch(scene, world, { x: hit.x, z: hit.z }, TIER_RADII[selectedChicken.tier])
