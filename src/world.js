@@ -18,13 +18,26 @@ import {
 
 const SIZE = 120
 const HALF = SIZE / 2
-// Cool desaturated blue-green (was 0xd9dcc4, a warm cream at ~86% value —
-// LIGHTER than the sky zenith at ~65%, so distant fogged ground rendered
-// brighter than the sky above it and blew out to white paper). This shares
-// the sky's hue family and sits darker in value than the sky's horizon band
-// (see buildSkyTexture's `horizon`, lerped up from this color), so recession
-// now reads as "toward shadow," not "toward a lit blank wall."
-const FOG_COLOR = 0x9fb6b0
+
+// Critic defect 3 (this pass): `scene.fog` is gone. THREE.Fog(0x9fb6b0, 55, 260)
+// washed the whole midground into one flat grey-green band — the treeline
+// stopped resolving and the field lost its drawn edges before it reached the
+// horizon bands. Neither reference photograph uses atmospheric haze ANYWHERE:
+// REF 1 states depth purely with discrete painted value planes, REF 2 has none
+// at all. Recession is now carried entirely by things this file already draws
+// as flat shapes stepping down in value — the silhouette bands in
+// buildSkyTexture, buildFarBackdropGround, the hedgerow/mown-rect strips in
+// _placeMidDistanceBackdrop, and the quantized per-tree value step in
+// _placeTreeClump (RECESSION_STEPS below). If depth ever needs more, add
+// another painted plane; do not put the fog back.
+
+/** The single dark value the receding planes step TOWARD. Not a fog colour —
+ * nothing lerps continuously toward it. _placeTreeClump quantizes into three
+ * fixed blends so the treeline reads as three drawn ranks, which is REF 1's
+ * actual mechanism. Grey-olive so a fully receded rank sits in the same family
+ * as buildSkyTexture's near-treeline band rather than drifting blue. */
+const RECESSION_DARK = new THREE.Color(0x4e5a46)
+const RECESSION_STEPS = [0, 0.2, 0.38]
 
 // Side-and-slightly-behind the subject (elevation ~24deg, azimuth roughly
 // camera-left) instead of near-overhead — was (26,34,30), which combined with
@@ -127,97 +140,52 @@ function gaussianRandom(stdDev) {
 
 // ---------------------------------------------------------------- ground
 
-/** Painter's-eye grass texture: dense small hand-drawn grass-clump strokes at
- * grass scale (~6 world units/tile). The broad value masses are owned
- * entirely by the vertex-color field bands (applyBroadFieldShading) now — this
- * texture only supplies the fine brushy detail on top, not competing blobs. */
-function buildGroundTexture() {
-  // 1024px at repeat(20,20) — was 256px at repeat(14,14), which put the same
-  // handful of strokes in lockstep across 5-8 visible tiles and read as a
-  // checkerboard. A bigger canvas at a tight repeat plus far more, far
-  // smaller strokes means no single mark is identifiable as a repeating
-  // motif or sized like foliage instead of grass.
-  const px = 1024
-  const scale = px / 256
-  const canvas = document.createElement('canvas')
-  canvas.width = canvas.height = px
-  const ctx = canvas.getContext('2d')
-  ctx.fillStyle = '#7ec852'
-  ctx.fillRect(0, 0, px, px)
-  const rnd = seededRand(4242)
-  // The radial masses previously drawn here (24-40 soft blobs, r up to 26
-  // world units) fought the vertex-color field bands, which now own the
-  // broad-mass job at a correct 12-18u frequency (see applyBroadFieldShading)
-  // — deleted rather than shrunk, since two systems drawing the same masses
-  // at different scales is the redundancy the critic flagged.
-  const tones = ['#6cb544', '#8fd867', '#5a9e3a']
-  ctx.lineCap = 'round'
-  // Strokes shrunk from len (18+22)*scale / width (6+6)*scale — 4.7u long by
-  // 1.4u wide, prop-sized (as wide as the chicken, 3x longer) — to grass-mark
-  // scale (~0.35u long, 0.09u wide), with count raised to stay dense enough
-  // not to read as sparse dots at the new tighter repeat.
-  // Critic defect 3: reserve a small blank corner (no strokes) that
-  // applyGrassDetailFade uses as the sampling target for far-field vertices —
-  // that's what lets grass-stroke density fade to nothing by mid-field
-  // instead of tiling at identical density from the hero's feet to the
-  // horizon.
-  const blankPx = px * 0.035
-  const blankR = px * 0.05
-  // Critic defect 7 (round 2): "a dense field of tiny dark tick marks ...
-  // reads as noise ... as fly specks where it overlaps the bright green
-  // patch." Count halved (400 -> 200) and individual stroke length raised
-  // (was 6-13 world-scaled px, now 10-18) so the same canvas carries fewer,
-  // longer marks — legible drawn blade strokes instead of stipple grain.
-  // applyGrassDetailFade (below) already fades this whole texture to the
-  // blank corner by mid-field; halving density here means what little
-  // remains near-field reads as brushwork rather than noise.
-  const strokeCount = 200
-  for (let i = 0; i < strokeCount; i++) {
-    const x = rnd() * px
-    const y = rnd() * px
-    if (Math.hypot(x - blankPx, y - blankPx) < blankR) continue
-    const a = rnd() * Math.PI
-    const len = (10 + rnd() * 8) * scale
-    ctx.strokeStyle = tones[i % tones.length]
-    ctx.lineWidth = (1.6 + rnd() * 1.4) * scale
-    ctx.beginPath()
-    ctx.moveTo(x, y)
-    ctx.quadraticCurveTo(x + Math.cos(a) * len * 0.5, y + Math.sin(a) * len * 0.5 - 6 * scale, x + Math.cos(a) * len, y + Math.sin(a) * len)
-    ctx.stroke()
-  }
-  const tex = new THREE.CanvasTexture(canvas)
-  if ('colorSpace' in tex) tex.colorSpace = THREE.SRGBColorSpace
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-  // repeat stays 1x1 now — applyGrassDetailFade writes final tile-scaled UVs
-  // per vertex directly (grass scale, ~4.5 world units/tile near camera) so
-  // it can also blend far vertices toward the blank corner above; a
-  // texture.repeat multiplier would double-scale on top of that.
-  tex.repeat.set(1, 1)
-  // NearestFilter at ~8.5 units/tile was aliasing, not stylization.
-  tex.magFilter = THREE.LinearFilter
-  tex.minFilter = THREE.LinearMipmapLinearFilter
-  tex.generateMipmaps = true
-  // Renderer isn't available at this contract's constructor(scene) signature;
-  // any value here is clamped to the GPU's real max by the renderer, so a
-  // generous fixed request is safe without a capabilities query.
-  tex.anisotropy = 8
-  return tex
-}
+// Critic defect 6 (this pass): buildGroundTexture() and applyGrassDetailFade()
+// used to live here — a tiled grass-tick stipple on the main ground plane at
+// 4.5 world units/tile, faded toward a blank corner of the canvas by
+// mid-field. Deleted outright, not retuned. Both references have completely
+// untextured ground: REF 2's grass, road and dirt are three flat unmodulated
+// fills meeting at hard edges, and REF 1's pasture is smooth painted value
+// shapes with no stroke texture anywhere. Across the mid-game field the
+// stipple read as fine noise laid over the paint, which is the one thing a
+// painted cel never has. The field's structure is now carried entirely by the
+// vertex-colour bands (applyBroadFieldShading) plus the drawn flat shapes in
+// _placeGroundValueShapes / _placeYardInteriorDetail — i.e. by shapes with
+// edges, not by grain. If a near-field mark is ever wanted back, draw it as
+// individual meshes inside z > 0 (buildStrawTick already does exactly that),
+// never as a tiled map on the 120u plane.
 
-// Posterized field bands — one hue family (green), value window widened to a
-// clearly readable +/-10% (was +/-6%, invisible in every render — the critic
-// found zero drawn geography across ~60% of the frame). Grass varies by a
-// few percent of hue; the picture's dark should still come from drawn cast
-// shadows, never the field tint, but the *masses* now need to actually show.
+// Posterized field bands — one hue family, value window at a clearly readable
+// +/-10% so the masses actually show.
+//
+// Critic defect 1 (this pass): these were kelly green — 0x86c057 / 0x9ccb5e /
+// 0xb2d668, hue ~90-93deg at ~45-54% saturation and 55-63% lightness. REF 1's
+// pasture and REF 2's barnyard grass are OLIVE/KHAKI: hue in the high 70s at
+// roughly 25-35% saturation. Rotated the whole family accordingly — hue
+// 77-80deg, saturation cut ~40% (45% -> 27%), lit value down ~10% (L 55% ->
+// 44%):
+//   0x86c057 (H93 S45 L55) -> 0x7d8f52 (H78 S27 L44)
+//   0x9ccb5e (H91 S50 L58) -> 0x8a9a5c (H78 S26 L48)
+//   0xb2d668 (H90 S54 L63) -> 0x99a768 (H79 S24 L53)
+// The top band's multiplier comes down with them (1.1 -> 1.06): at 1.1 over a
+// 2.2-intensity key the light band was the thing clipping toward paper white,
+// and nothing in either reference approaches white anywhere. Every other green
+// in this file (grass tufts, ground blobs, hedgerows, mown swaths, treeline
+// canopies, the wing flats) was rotated to the same hue/saturation window in
+// the same pass — a single band left at the old chroma would read as the only
+// wrong colour in frame.
 const FIELD_BANDS = [
-  { color: new THREE.Color(0x86c057), value: 0.9 },
-  { color: new THREE.Color(0x9ccb5e), value: 1.0 },
-  { color: new THREE.Color(0xb2d668), value: 1.1 },
+  { color: new THREE.Color(0x7d8f52), value: 0.9 },
+  { color: new THREE.Color(0x8a9a5c), value: 1.0 },
+  { color: new THREE.Color(0x99a768), value: 1.06 },
 ]
 
-/** Warm lift for the far band — pure yellow would fight the field's green
- * family, so this leans yellow-green rather than straight yellow. */
-const FAR_BAND_WARM = new THREE.Color(0xcdc26e)
+/** Warm lift for the far band. Was 0xcdc26e (H53 S49 L62), which compounded
+ * the old kelly-green field into something that read lit-to-clipping at the
+ * horizon. Now a dusty khaki (H68 S30 L56) — still a warm step away from the
+ * olive so the far field separates, but inside the same muted window, and a
+ * clear step BELOW the sky so the ground never out-values what's above it. */
+const FAR_BAND_WARM = new THREE.Color(0xa7b06d)
 
 /** Low-frequency field variation baked as vertex colors, quantized into
  * discrete painted bands instead of a continuous cool-to-warm airbrush.
@@ -255,30 +223,6 @@ function applyBroadFieldShading(geo) {
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
 }
 
-/** Critic defect 3: the ground texture repeated at identical density and
- * scale from the hero's feet to the horizon — a uniform stipple that reads as
- * a texture map, not paint. Fixes it by hand-writing the ground plane's UVs
- * instead of relying on the flat 0..1 default: near vertices (high +z, close
- * to the start camera) sample the fully tiled, detailed texture at grass
- * scale; far vertices (toward -z) LERP their UV toward one fixed coordinate
- * that buildGroundTexture deliberately leaves blank of strokes. Blending
- * toward a FIXED target (not just widening the tile) avoids the wrap-seam
- * artefacts a per-vertex repeat change would cause, and means density/size
- * genuinely fades to nothing by mid-field rather than just getting coarser. */
-function applyGrassDetailFade(geo) {
-  const pos = geo.attributes.position
-  const uv = geo.attributes.uv
-  const blank = 0.035 // matches buildGroundTexture's reserved blank corner
-  const tile = 4.5 // world units/tile close to camera
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i)
-    const z = pos.getZ(i)
-    const t = smooth01(-z, 6, 42) // 0 near the camera, 1 by mid-field
-    uv.setXY(i, THREE.MathUtils.lerp(x / tile, blank, t), THREE.MathUtils.lerp(z / tile, blank, t))
-  }
-  uv.needsUpdate = true
-}
-
 /** Perturbs a CircleGeometry's rim (all vertices but the center) with a
  * low-frequency angular wobble so the disc's silhouette isn't a perfect
  * circle — used to keep the backdrop disc's rim from ever coinciding with
@@ -303,17 +247,21 @@ function buildWobbledDiscGeometry(radius, segments, amp) {
  * terminates on a hard edge. Pushed to radius 170 (was HALF+10 = 70, which
  * sat only ~0.8deg / 17px from the ground plane's own z=-60 edge and fused
  * into one dead-straight horizon line) and dropped/tilted so its rim never
- * runs parallel to the ground plane's edge — and still past fog.far (110,
- * see World constructor) so the disc is fully fog-tinted well before its own
- * edge could present as a seam. Rim is wobbled, not a clean circle, for the
- * same reason. Recolored distinctly greener and darker than FOG_COLOR/the
- * sky horizon (was 0xaec2ba, a few percent off both) so it reads as
- * continuing pasture receding into haze, not as a third slab of sky. */
+ * runs parallel to the ground plane's edge. Rim is wobbled, not a clean
+ * circle, for the same reason.
+ *
+ * Critic defect 3 (this pass): with scene.fog deleted this disc no longer gets
+ * tinted at render time, so it has to state its own recession — which is the
+ * point, since a flat painted plane stepping down in value IS the reference's
+ * method. Recolored 0x9db78a -> 0x76825c: same olive family as the new
+ * FIELD_BANDS, one clear value step darker than the darkest of them (L 44% ->
+ * L 43% at lower chroma once lit), so it reads as pasture continuing past the
+ * played field and lying in the treeline's shadow, not as a third slab of sky. */
 function buildFarBackdropGround() {
   const radius = 170
   const geo = buildWobbledDiscGeometry(radius, 64, 0.03)
   geo.rotateX(-Math.PI / 2)
-  const mat = toonMaterial(0x9db78a, { steps: 2 })
+  const mat = toonMaterial(0x76825c, { steps: 2 })
   const disc = new THREE.Mesh(geo, mat)
   disc.position.y = -1.2
   disc.rotation.x = THREE.MathUtils.degToRad(0.5)
@@ -340,44 +288,52 @@ function drawSilhouetteBand(ctx, w, topY, baseY, color, bumps, amp) {
   ctx.fill()
 }
 
-/** Five-puff cloud massing — this shape reads fine at any scale; it was only
- * ever the count/size in drawPaintedClouds that fused clouds into a slab.
- * `alpha`/`fill` let a far, hazier rank sit behind the near rank without a
- * second drawing routine.
+/** Five-puff cloud massing, drawn as flat opaque shapes with a full hard
+ * contour on every puff.
  *
- * Critic defect 1 (this pass): every fill here used to run through
- * `ctx.globalAlpha` gradients stacked three deep (a soft drop-shadow ellipse
- * at 0.16, a soft warm underside wash at 0.3, an outline stroked at 0.5 around
- * EVERY puff so overlapping lobes left visible construction rings) — that is
- * a painted-with-an-airbrush cloud, not a drawn one. Rebuilt as three flat,
- * opaque passes with no per-shape alpha falloff: a hard white body, one flat
- * cool-grey underside shape (lit from above reads as a shadow plane, not a
- * warm highlight — clouds don't have a warm underside), and a thin ink line
- * traced only across each puff's TOP arc (the puff's own facing-the-sun
- * silhouette edge) rather than a full ring, so the mass reads as one
- * scalloped contour instead of a stack of overlapping outline circles. */
-function drawCloudShape(ctx, cx, cy, s, { alpha = 0.94, fill = '#fffaf2' } = {}) {
+ * Critic defect 5 (this pass): "clouds arrive as airbrushed smears ... the
+ * deliberately hard ellipse fills and the thin top-arc contour are both
+ * destroyed by LinearFilter magnification." The drawing was never the problem;
+ * the texel budget was. At scale 16-30 on a 1024px canvas a cloud edge spanned
+ * about one texel by the time the dome magnified it across the start camera's
+ * sky, so the one thing that makes it read as drawn — the edge — was the first
+ * thing the filter ate. Two changes fix it, and they only work together:
+ * SKY_PX is now 2048 (buildSkyTexture) and the scales in drawPaintedClouds are
+ * 4-6x larger, so a contour spans enough texels to survive.
+ *
+ * The contour is a FULL ring per puff now, not the top arc only. The top-arc
+ * version was written to avoid overlapping construction rings, but a scalloped
+ * mass of overlapping circles IS the golden-age cloud — and at the old texel
+ * density the arc was invisible anyway, which is the whole defect. Line width
+ * is held to 2-3 texture pixels regardless of cloud scale: a weight, not a
+ * fraction.
+ *
+ * `fill` is a bone white, not paper white. Nothing in either reference reaches
+ * above ~85% value, and with the sun cut to 1.5 (see _buildLights) a #fffaf2
+ * cloud would be the one thing in frame that still clipped. */
+const CLOUD_INK_PX = 2.6
+
+function drawCloudShape(ctx, cx, cy, s, { alpha = 1, fill = '#d9d5cb' } = {}) {
   const puffs = [[0, 0, 1], [0.7, 0.15, 0.65], [-0.7, 0.12, 0.68], [0.25, -0.35, 0.55], [-0.3, -0.3, 0.5]]
+  const ellipse = (dx, dy, r) =>
+    ctx.ellipse(cx + dx * s, cy + dy * s * 0.6, r * s * 0.75, r * s * 0.42, 0, 0, Math.PI * 2)
   ctx.globalAlpha = alpha
   ctx.fillStyle = fill
   for (const [dx, dy, r] of puffs) {
     ctx.beginPath()
-    ctx.ellipse(cx + dx * s, cy + dy * s * 0.6, r * s * 0.75, r * s * 0.42, 0, 0, Math.PI * 2)
+    ellipse(dx, dy, r)
     ctx.fill()
   }
-  // Flat cool-grey underside — one shape, opaque at this alpha, no gradient.
-  ctx.fillStyle = '#c3cdd6'
+  // Flat cool-grey underside — one shape, opaque, no gradient.
+  ctx.fillStyle = '#aeb2ba'
   ctx.beginPath()
   ctx.ellipse(cx, cy + s * 0.3, s * 0.82, s * 0.19, 0, 0, Math.PI * 2)
   ctx.fill()
-  ctx.strokeStyle = 'rgba(90,78,68,0.65)'
-  ctx.lineWidth = Math.max(1, s * 0.03)
+  ctx.strokeStyle = '#5a4e44'
+  ctx.lineWidth = CLOUD_INK_PX
   for (const [dx, dy, r] of puffs) {
     ctx.beginPath()
-    // Top arc only (~200deg sweep centred on straight up) — the puff's lit,
-    // sun-facing silhouette edge. No bottom arc, so the underside shape above
-    // owns the lower boundary and the two never overlap into a full ring.
-    ctx.ellipse(cx + dx * s, cy + dy * s * 0.6, r * s * 0.75, r * s * 0.42, 0, Math.PI * 1.15, Math.PI * 1.95)
+    ellipse(dx, dy, r)
     ctx.stroke()
   }
   ctx.globalAlpha = 1
@@ -386,165 +342,114 @@ function drawCloudShape(ctx, cx, cy, s, { alpha = 0.94, fill = '#fffaf2' } = {})
 /** Painted-flat clouds baked straight into the backdrop so they are visible
  * from frame one regardless of where the camera is orbited to.
  *
- * Critic defect 3: cy/scale here were pinned to elevation = 90 - 180*(y/h)
- * for a retired (2,14,34) camera; the real start camera ((-1,9.5,23) ->
- * (-1.5,1.8,-7), see the START-VIEW note at the top of this file) tops out at
- * only about +0.6deg elevation, so the old h*(0.45..0.505) band (+3.6..-0.9deg)
- * put the far rank off the top of frame and the near rank at/below the
- * occluded horizon — an empty sky in every screenshot. Retargeted to the
- * elevation this camera actually shows: far rank y = h*(0.42..0.462)
- * (~+14.4..+6.8deg), near rank y = h*(0.462..0.495) (~+6.8..+0.9deg), which
- * reaches down to the camera's real ceiling instead of past it. If the camera
- * reframes again, recompute this against elevation = 90 - 180*(y/h) rather
- * than copying these numbers forward blind — that is exactly how this band
- * went stale the first time.
+ * cy is pinned to the start camera's real sky window. The dome maps
+ * elevation = 90 - 180*(y/h), and the camera ((-1,9.5,23) -> (-1.5,1.8,-7),
+ * see the START-VIEW note at the top of this file) tops out around +0.6deg,
+ * so the usable band is roughly y = h*0.42..0.495 (+14.4..+0.9deg). If the
+ * camera reframes, recompute against that mapping rather than copying these
+ * numbers forward blind — that is exactly how this band went stale once
+ * already.
  *
- * Critic defect 1 (round 2): the previous pass cut this to 2 far + 2 near
- * (four total) to stop clouds fusing into a slab — but at four total, with
- * placement failures from the separation check, real renders were landing
- * ZERO clouds in the camera's actual sky window: "zero clouds anywhere in
- * the visible band." Raised to 3 far + 4 near (seven total, within the 5-7
- * the critic asked for) and the minimum separation tightened (was scale*4.2,
- * now scale*2.6) so seven puffs can actually all find a slot across one
- * 1024px-wide band instead of half of them silently failing their 24 tries.
- *
- * A far rank (half scale, greyer, lower alpha) sits behind a near rank (full
- * scale/alpha) so the two ranks read as depth instead of one flat layer. */
+ * Critic defect 5 (this pass): count cut from seven (3 far + 4 near) to TWO.
+ * REF 2 has no clouds in frame at all and REF 1 shows a dark navy sliver of
+ * sky; seven puffs across the band was more weather than either reference has
+ * anywhere, and at the new 4-6x scale seven would tile the whole dome. Two
+ * shapes at scale 95-150 on a 2048px canvas is one clear cartoon cloud beat
+ * and nothing else. The far/near two-rank split is gone with them: two clouds
+ * cannot state depth, and with scene.fog deleted the picture states depth with
+ * painted planes on the ground, not with atmosphere in the sky. */
 function drawPaintedClouds(ctx, w, h) {
   const rnd = seededRand(99)
   const accepted = []
-  const place = (scale, cyMin, cyMax, opts) => {
+  const place = (scale, cyMin, cyMax) => {
     for (let tries = 0; tries < 24; tries++) {
       const cx = rnd() * w
-      const minSep = scale * 2.6
-      const clash = accepted.some((a) => Math.min(Math.abs(a - cx), w - Math.abs(a - cx)) < minSep)
+      const clash = accepted.some((a) => Math.min(Math.abs(a - cx), w - Math.abs(a - cx)) < scale * 2.6)
       if (clash) continue
       accepted.push(cx)
       const cy = h * (cyMin + rnd() * (cyMax - cyMin))
-      drawCloudShape(ctx, cx, cy, scale, opts)
-      if (cx < scale * 1.5) drawCloudShape(ctx, cx + w, cy, scale, opts)
-      if (cx > w - scale * 1.5) drawCloudShape(ctx, cx - w, cy, scale, opts)
+      drawCloudShape(ctx, cx, cy, scale)
+      // Wrap copies so a cloud straddling u=0/1 isn't cut in half on the dome.
+      if (cx < scale * 1.5) drawCloudShape(ctx, cx + w, cy, scale)
+      if (cx > w - scale * 1.5) drawCloudShape(ctx, cx - w, cy, scale)
       return
     }
   }
-  // Far rank first so the near rank can sit visually in front of it.
-  //
-  // Critic defect 5 (round 1): fill recolored from a cool grey (#d7dbe0 —
-  // the "dull tan-grey smudges ... read as dirt on the lens" next to the good
-  // white cumulus) to the same near-white as the near rank, alpha lifted so
-  // the ink edge drawCloudShape now adds still reads at this half scale
-  // instead of washing out.
-  for (let i = 0; i < 3; i++) {
-    const nearScale = 16 + rnd() * 14
-    place(nearScale * 0.5, 0.42, 0.462, { alpha: 0.8, fill: '#f7f1e6' })
-  }
-  for (let i = 0; i < 4; i++) {
-    place(15 + rnd() * 13, 0.462, 0.495, { alpha: 0.94, fill: '#fffaf2' })
-  }
+  for (let i = 0; i < 2; i++) place(95 + rnd() * 55, 0.428, 0.478)
 }
 
-/** Backdrop painted as a theatrical set piece: gradient sky, a warm haze band,
- * a blue-grey hill ridge, a dark scalloped treeline, and baked-in clouds. */
+/** The sky canvas is square and BIG on purpose. 1024 was not enough texels for
+ * a drawn cloud edge to survive being magnified across a 280-unit dome at the
+ * start camera (critic defect 5) — the hard ellipse fills and the contour both
+ * dissolved into one soft cotton blob. 2048 doubles the texel budget in each
+ * axis at 16MB of VRAM, which is the cheapest possible fix and the one the
+ * cloud scales in drawPaintedClouds are now tuned against. */
+const SKY_PX = 2048
+
+/** Backdrop painted as a theatrical set piece: a near-flat grey-violet sky and
+ * three drawn silhouette bands stepping down in value toward the field.
+ *
+ * Critic defect 2 (this pass): this used to ramp a saturated cyan zenith
+ * (0x4198e0) through a warm 0xffe2ae haze band down to a cream horizon — a
+ * sunset gradient with a full hue journey, plus a soft haze wash smeared over
+ * the treeline seam. REF 2's sky is a near-flat grey-violet around #8f95ad
+ * varying maybe 5% in value across the whole visible band, with no clouds in
+ * frame; REF 1's is a dark navy sliver. The gradient, the haze lerp and the
+ * seam wash stacked into more atmosphere than either reference has anywhere,
+ * and they fought the silhouette bands that are supposed to be doing the
+ * distance work.
+ *
+ * So: ONE colour, SKY_BASE, varied by 7% in value top-to-bottom (barely a
+ * gradient — just enough that the dome doesn't read as a flat-shaded ball),
+ * the upperHaze lerp deleted, the seam wash deleted, and the three bands
+ * retuned as clear value steps against it. That stepping IS the reference's
+ * method of stating distance:
+ *   sky        #8d93a8  L 61%   grey-violet
+ *   far hill   #727892  L 51%   violet, still sky family
+ *   mid ridge  #5b6570  L 40%   turning grey-green
+ *   treeline   #3c463a  L 25%   dark olive, land family
+ * Each is a 10-15 point drop, so every boundary is a drawn edge rather than a
+ * wash, and the ladder walks the hue from sky to ground as it descends. */
+const SKY_BASE = new THREE.Color(0x8d93a8)
+
 function buildSkyTexture() {
-  const w = 1024
-  const h = 1024
+  const w = SKY_PX
+  const h = SKY_PX
   const canvas = document.createElement('canvas')
   canvas.width = w
   canvas.height = h
   const ctx = canvas.getContext('2d')
-  // Critic defect 1 (round 2): "flat vertical blue-grey ramp ... this is fog
-  // color masquerading as a backdrop" — the old zenith (0x6fb8de) and the old
-  // horizon (FOG_COLOR lifted toward plain white) differed only in VALUE, not
-  // hue, so the gradient read as one grey-blue wash rather than two colours
-  // meeting. Zenith pushed to a more saturated, more blue cyan; horizon lerp
-  // target swapped from white to a warm cream (low blue channel) so the ramp
-  // now carries an actual hue journey — cool saturated blue at the top,
-  // warming through the gradient to a cream horizon — the way a painted sky
-  // backdrop is actually laid in, not just darkened toward the top.
-  const zenith = new THREE.Color(0x4198e0)
-  const upperHaze = new THREE.Color(0xffe2ae)
-  // The fog, the sky's horizon band and the far-backdrop disc all need to
-  // separate by value or they fuse into one grey slab (the critic's "haze
-  // soup"). Sky horizon is still the lightest of the three — lerped off
-  // FOG_COLOR toward warm cream (0xffdba0, deliberately low-blue so the
-  // channel drops rather than just lightens) rather than toward white — with
-  // the fog itself in between and the far-backdrop disc (buildFarBackdropGround)
-  // the darkest, greenest of the three so it reads as pasture, not more sky.
-  const horizon = new THREE.Color(FOG_COLOR).lerp(new THREE.Color(0xffdba0), 0.4)
   const c = new THREE.Color()
   for (let y = 0; y < h; y++) {
-    const v = y / h
-    const worldY = Math.cos(v * Math.PI) // +1 zenith .. 0 horizon .. -1 nadir
-    // Critic defect 5: the visible sky band (per the START-VIEW camera fit
-    // below) only reaches worldY ~0.12 at its very top — which used to be
-    // exactly where this ramp finished easing and went flat zenith-blue.
-    // The gradient had already ended before the frame's top edge did, which
-    // is what read as "a hard horizontal seam where the top blue band
-    // begins" — three stacked stripes instead of continuous atmosphere.
-    // Widened so it's still easing gently through the whole visible band.
-    const t = smooth01(worldY, -0.03, 0.3)
-    c.copy(horizon).lerp(zenith, t)
-    if (worldY > 0.02 && worldY < 0.34) c.lerp(upperHaze, 0.35 * smooth01(worldY, 0.02, 0.22))
+    const worldY = Math.cos((y / h) * Math.PI) // +1 zenith .. 0 horizon .. -1 nadir
+    // +/-3.5% about SKY_BASE, darkest at the zenith. Across the camera's real
+    // visible band (worldY ~-0.11..+0.12) that is under 1% — flat, which is
+    // the point; the remaining range only exists so an orbited-up camera
+    // doesn't see a perfectly uniform ball.
+    const mul = 1 - 0.035 * THREE.MathUtils.clamp(worldY, -1, 1)
+    c.copy(SKY_BASE).multiplyScalar(mul)
     ctx.fillStyle = `rgb(${(c.r * 255) | 0},${(c.g * 255) | 0},${(c.b * 255) | 0})`
     ctx.fillRect(0, y, w, 1)
   }
-  // Was h*0.44, computed against the wrong occluder. The real constraint is
-  // the dome's own elevation mapping: elevation = 90 - 180*(y/h), and the
-  // default camera's visible band is only ~-6.5..+4.4deg — i.e. y =
-  // h*0.475..0.537. h*0.44 (elevation +10.8deg) was off the top of the frame
-  // entirely, which is why the ridge/treeline never rendered on screen.
-  // Raised ~0.004 off 0.505 (whole stack, including the near-treeline
-  // baseline below) so the now-much-thicker bands sit further into the
-  // visible sky band instead of dipping toward the frame's lower,
-  // fog-dominated edge.
+  // The dome maps elevation = 90 - 180*(y/h). The start camera's visible band
+  // is only about -6.5..+4.4deg, i.e. y = h*0.475..0.537, so the whole band
+  // stack has to live inside that or it renders off-frame — which is exactly
+  // what happened the first two times these numbers were guessed in world
+  // space instead of solved against this mapping.
   const horizonY = h * 0.501
-  // Three receding painted planes instead of two (hill, treeline) — the hill
-  // was near-black-adjacent to the treeline's own near-black (#1f2e1a next to
-  // sky), so the treeline read as a rendering artifact and the hill nearly
-  // vanished a value off the sky. Each band gets its own bump count/amplitude
-  // (not a uniform scale of one another) so the three don't read as one
-  // printed, repeating wobble — and the nearest (treeline) band carries the
-  // largest, most irregular scallops, per how a painted flat recedes.
-  // Mid-ridge and near-treeline amplitudes raised ~3x (0.0055->0.016,
-  // 0.011->0.03) — at the old amplitudes the tallest feature was a ~13px
-  // bump on a 1024px texture, a hairline at the default camera; the fog
-  // gradient was doing all the "distance" work the painted backdrop was
-  // written to do.
-  // Critic defect 3: the hill bands (far hill + mid ridge) sat close enough
-  // in value to the near-treeline band — and to the ACTUAL 3D treeline mesh
-  // ranks fogged out near the same depth (_placeTreeline) — that the whole
-  // background resolved as one muddy blue-gray mass with no drawn ridge line.
-  // Both hill colors lifted ~15% lighter and desaturated further (0.75x/0.6x
-  // saturation) with a small hue push toward blue (cooler), computed off the
-  // ORIGINAL colors below so the relationship stays legible if either is
-  // retuned again:
-  //   far hill  #7d95a8 (L57%) -> #9ca8b5 (L66%)
-  //   mid ridge #5a7263 (L40%) -> #7c8d8a (L52%)
-  // The near treeline is held, not lifted — nudged a touch darker (L28% ->
-  // L26%) so it still reads a full value step (>20 points) below the new
-  // mid-ridge value instead of the two nearly touching.
-  // Critic defect 1 (round 2): "the distant hill sits about one value off the
-  // sky behind it and nearly disappears" — #9ca8b5 sat inside a few percent
-  // value of the NEW warmer horizon band above it once the ramp stopped being
-  // a flat grey wash. Darkened ~18% (exceeds the critic's 12% floor) and
-  // cooled (blue channel held while red/green drop, pushing hue away from the
-  // now-warm horizon) so it reads as a drawn ridge, not a continuation of sky.
-  drawSilhouetteBand(ctx, w, horizonY - h * 0.015, horizonY - h * 0.001, '#7c88a0', 5, h * 0.005) // far hill
-  drawSilhouetteBand(ctx, w, horizonY - h * 0.005, horizonY + h * 0.005, '#7c8d8a', 8, h * 0.016) // mid ridge
-  drawSilhouetteBand(ctx, w, h * 0.508 - h * 0.013, h * 0.508 + h * 0.006, '#374b3b', 7, h * 0.03) // near treeline
-  // Critic defect 3: the near-treeline band's flat fill used to cut straight
-  // to the fog-tinted ground below it with no transition — a hard horizontal
-  // seam exactly where the painted hills meet the field. One soft gradient
-  // wash laid across that seam (treeline color fading through a light warm
-  // haze tone and back to nothing) blurs the join into atmosphere instead of
-  // a drawn line, the way a painted flat's far edge would actually recede.
-  const seamY = h * 0.508 + h * 0.006
-  const seamHaze = ctx.createLinearGradient(0, seamY - h * 0.008, 0, seamY + h * 0.026)
-  seamHaze.addColorStop(0, 'rgba(55,75,59,0)')
-  seamHaze.addColorStop(0.35, 'rgba(214,214,188,0.4)')
-  seamHaze.addColorStop(1, 'rgba(214,214,188,0)')
-  ctx.fillStyle = seamHaze
-  ctx.fillRect(0, seamY - h * 0.008, w, h * 0.034)
+  // Each band gets its own bump count and amplitude (not a uniform scale of
+  // one another) so the three don't read as one printed, repeating wobble, and
+  // the nearest carries the largest, most irregular scallops — how a painted
+  // flat recedes. Amplitudes are in fractions of h, so they survived the
+  // canvas going to 2048 unchanged.
+  drawSilhouetteBand(ctx, w, horizonY - h * 0.015, horizonY - h * 0.001, '#727892', 5, h * 0.005) // far hill
+  drawSilhouetteBand(ctx, w, horizonY - h * 0.005, horizonY + h * 0.005, '#5b6570', 8, h * 0.016) // mid ridge
+  drawSilhouetteBand(ctx, w, h * 0.508 - h * 0.013, h * 0.508 + h * 0.006, '#3c463a', 7, h * 0.03) // near treeline
+  // The soft gradient wash that used to blur the treeline-to-ground seam is
+  // deleted with the rest of the atmosphere (critic defect 2/3). REF 2's
+  // grass, road and dirt are three flat unmodulated fills meeting at HARD
+  // edges — a drawn boundary is correct here, and the far-backdrop disc
+  // (buildFarBackdropGround) is what sits under this join now.
   drawPaintedClouds(ctx, w, h)
   const tex = new THREE.CanvasTexture(canvas)
   if ('colorSpace' in tex) tex.colorSpace = THREE.SRGBColorSpace
@@ -1158,42 +1063,86 @@ function fadeOutlineWithDistance(tree, t) {
   return tree
 }
 
-/** Dedicated near-camera wing-flat silhouette for the repoussoir frame —
- * NOT a scaled makeTree(). At 2.4-2.6x scale, 12-14u from camera, a single
- * smooth canopy sphere crops into a featureless kidney-shaped blob: no
- * scalloped edge, no sky-gaps, no trunk in frame, and the near-black tint
- * swallowed makeTree's own ink outline so the mass had no drawn edge at all.
- * This builds 7 overlapping canopy lobes by hand around a trunk that lands
- * at ground level (so it reads as entering the bottom frame edge at this
- * proximity), deliberately skips lobes at ~180deg and ~280deg so two sky-gaps
- * punch through the mass, and tints a lit-side subset of lobes toward
- * `rimHex` (lighter than `baseHex`) so the silhouette holds a shape instead
- * of reading as a hole in the frame. */
-function buildWingFlat(baseHex, rimHex) {
-  const g = new THREE.Group()
-  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.5, 2.2, 8), toonMaterial(0x4a2f1a, { steps: 3 }))
-  trunk.position.y = 0.9
-  g.add(trunk)
-  const baseMat = toonMaterial(baseHex, { steps: 3 })
-  const rimMat = toonMaterial(rimHex, { steps: 3 })
-  // angle (deg, gaps deliberately left at ~180 and ~280), radial offset,
-  // height, radius, lit (sun-facing side gets the rim tint)
-  const lobes = [
-    { a: 20, r: 0.9, h: 2.6, s: 1.5, lit: true },
-    { a: 70, r: 1.3, h: 3.4, s: 1.7, lit: false },
-    { a: 130, r: 1.1, h: 2.2, s: 1.4, lit: false },
-    { a: 230, r: 1.0, h: 3.0, s: 1.6, lit: false },
-    { a: 320, r: 0.8, h: 2.4, s: 1.3, lit: true },
-    { a: 350, r: 1.4, h: 3.8, s: 1.9, lit: true },
-    { a: 40, r: 0.5, h: 3.9, s: 1.2, lit: true },
-  ]
-  for (const lo of lobes) {
-    const rad = THREE.MathUtils.degToRad(lo.a)
-    const mesh = new THREE.Mesh(new THREE.SphereGeometry(lo.s, 8, 7), lo.lit ? rimMat : baseMat)
-    mesh.position.set(Math.cos(rad) * lo.r, lo.h, Math.sin(rad) * lo.r)
-    g.add(mesh)
+/** The start camera's eye point, in world space. main.js opens at (-1, 9.5, 23)
+ * looking at (-1.5, 1.8, -7) — see the START-VIEW note at the top of this file.
+ * The wing flats orient themselves against it (see _placeForegroundFrame), so
+ * if that camera moves this constant is the one thing that has to move with it. */
+const START_EYE = new THREE.Vector3(-1, 9.5, 23)
+
+/** One deckled tree silhouette as a closed polygon in local XY: origin at
+ * ground contact, +Y up, canopy centred over the trunk. The scallop is a sum
+ * of two integer-frequency sines plus a seeded per-vertex nudge, so no two
+ * wings share a contour and none of them reads as a circle.
+ *
+ * The canopy sweep deliberately stops short of the horizontal on both sides
+ * (195deg round the top to -15deg), which leaves the trunk standing clear
+ * below it instead of being swallowed — the exact failure the sphere-lobe
+ * version had from any raised camera. */
+function wingSilhouettePoints(seed) {
+  const rnd = seededRand(seed)
+  const [trunkH, halfTrunk, cy, R] = [2.3, 0.36, 4.35, 2.6]
+  const pts = [{ x: -halfTrunk, y: 0 }, { x: -halfTrunk * 0.8, y: trunkH }]
+  const steps = 40
+  for (let i = 0; i <= steps; i++) {
+    const deg = 195 - (i / steps) * 210
+    const a = THREE.MathUtils.degToRad(deg)
+    const scallop = 1 + Math.sin(a * 5) * 0.13 + Math.sin(a * 11 + 1.3) * 0.06 + (rnd() - 0.5) * 0.07
+    pts.push({ x: Math.cos(a) * R * 1.15 * scallop, y: cy + Math.sin(a) * R * 0.94 * scallop })
   }
-  return addOutline(g, { color: 0x120d06, thickness: 0.05 })
+  pts.push({ x: halfTrunk * 0.8, y: trunkH }, { x: halfTrunk, y: 0 })
+  return pts
+}
+
+function buildWingCard(points, hex, { ink = 0, z = 0 } = {}) {
+  const shape = new THREE.Shape(points.map((p) => new THREE.Vector2(p.x, p.y)))
+  const mat = toonMaterial(hex, { steps: 2, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 })
+  mat.side = THREE.DoubleSide
+  const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape, 2), mat)
+  mesh.position.z = z
+  if (ink > 0) addOutline(mesh, { flat: true, pixels: ink, color: 0x120d06 })
+  else mesh.userData.noOutline = true
+  return mesh
+}
+
+/** Dedicated near-camera wing flat for the repoussoir frame — NOT a scaled
+ * makeTree().
+ *
+ * Critic defect 4 (this pass): the previous version built 7 overlapping canopy
+ * SPHERES (radius 1.3-1.9, height 2.2-3.9) around a 2.2-unit trunk. From the
+ * low start camera that works; from the mid-game aerial at y=26 the lobes
+ * completely occlude the trunk, the deliberate 180/280deg sky-gaps never face
+ * the eye, and the two wings read as featureless dark-green boulders eating
+ * ~20% of the frame with no readable edge. A solid of revolution cannot hold a
+ * drawn contour from an arbitrary angle; only a card can.
+ *
+ * So this is a flat scalloped silhouette card — one ShapeGeometry, no volume —
+ * plus a smaller lighter card sitting a hair in front of it on the sun side.
+ * It is the same treatment the reference gives every piece of foreground
+ * foliage: a drawn shape with a deckled edge and one interior value break.
+ * Two consequences, both wanted:
+ *  - the deckled contour is identical from every azimuth, so the wing keeps a
+ *    legible edge wherever the player orbits, and
+ *  - seen from directly above the card foreshortens to a sliver, so the aerial
+ *    shot gets its frame back without needing a per-frame camera-elevation
+ *    hide (World has no update hook — see CONTRACTS.md — so a gate would have
+ *    had to be wired through main.js, which is not this file's to touch).
+ * DoubleSide because the card has no back, and the caller yaws it toward the
+ * start camera. */
+function buildWingFlat(baseHex, rimHex, seed = 5100) {
+  const g = new THREE.Group()
+  const outline = wingSilhouettePoints(seed)
+  g.add(buildWingCard(outline, baseHex, { ink: INK_WEIGHT.HERO }))
+  // Lit lobe: the same contour, shrunk and pushed up-and-right into the
+  // sun-facing quadrant so it kisses the outer edge on one side and leaves the
+  // rest of the mass in shadow — a value break inside the silhouette, not a
+  // concentric inner blob. Inkless: the drawn edge belongs to the silhouette.
+  // slice(2, -2) drops the four trunk points — the lit shape is canopy only,
+  // otherwise it comes out as a small floating tree inside the big one.
+  const lit = wingSilhouettePoints(seed + 1)
+    .slice(2, -2)
+    .map((p) => ({ x: p.x * 0.62 + 1.0, y: p.y * 0.62 + 1.45 }))
+  g.add(buildWingCard(lit, rimHex, { z: 0.04 }))
+  return g
 }
 
 // ------------------------------------------------------------- crop patch
@@ -1404,15 +1353,13 @@ export class World {
     this.scene = scene
     this.size = SIZE
     this.obstacles = []
-    // Pushed back out (was 30/110 with a warm cream FOG_COLOR — at that
-    // range the near treeline rank, r~72-100, sat at 87%+ fog *before* the
-    // per-tree baked tint in _placeTreeClump applied a second blend toward
-    // the same color, so the entire mid-ground washed to a white flood). Now
-    // FOG_COLOR is cool/dark instead of warm/light and _placeTreeClump no
-    // longer double-applies it, so 55/260 gives a gradual recession that
-    // still resolves the barn, water tower and mid grove as shapes rather
-    // than erasing them by 100u.
-    this.scene.fog = new THREE.Fog(FOG_COLOR, 55, 260)
+    // No scene.fog. THREE.Fog(0x9fb6b0, 55, 260) used to live here and it was
+    // washing the entire midground into one flat grey-green band — the
+    // treeline barely resolvable, the field losing its drawn edges well before
+    // the horizon. Neither reference uses haze anywhere; see the RECESSION_DARK
+    // note at the top of this file for what carries depth instead. Materials
+    // around the file still pass `fog: true` — harmless, and left in place so
+    // the decision to drop the fog is one line to revisit, not thirty.
     this._buildSky()
     this._buildLights()
     this._buildGround()
@@ -1514,10 +1461,7 @@ export class World {
     const geo = new THREE.PlaneGeometry(this.size, this.size, segs, segs)
     geo.rotateX(-Math.PI / 2)
     applyBroadFieldShading(geo)
-    applyGrassDetailFade(geo)
     const mat = toonMaterial(0xffffff, { steps: 3, vertexColors: true })
-    mat.map = buildGroundTexture()
-    mat.needsUpdate = true
     const ground = new THREE.Mesh(geo, mat)
     ground.receiveShadow = true
     this.scene.add(ground)
@@ -2319,8 +2263,8 @@ export class World {
    * behind the eye and never rendered. Moved inside the near third of the
    * frustum so crowns break the top edge and trunks break the left/right
    * edges. Built from buildWingFlat (not a scaled makeTree()) so the mass
-   * scallops, punches sky-gaps, and carries a trunk into the bottom edge and
-   * a lit-side rim tint instead of cropping to one featureless canopy sphere.
+   * carries a deckled contour, a trunk into the bottom edge and a lit-side
+   * value break instead of cropping to one featureless canopy sphere.
    *
    * Critic defect 1: against the real start camera ((-1,9.5,23) -> (-1.5,1.8,-7),
    * see the START-VIEW note at the top of this file) the left wing at
@@ -2328,19 +2272,28 @@ export class World {
    * and its near-black 0x24541f base read as a lens smudge rather than a
    * tree — while bisecting the scarecrow and swallowing SWING_TREE's tire
    * swing. Pushed back/out to (-14,16) at a smaller 1.5 scale so the
-   * scallops and sky-gaps buildWingFlat draws actually land inside frame; the
-   * third spot at (-30,14) is deleted outright — it never entered frame at
-   * any camera this file has used. Base/rim lifted a full step lighter
-   * (0x24541f/0x3d7a33 -> 0x3a6b2c/0x5a9440) so individual lobes separate
-   * from the field instead of reading as one black mass. The scarecrow and
-   * tire swing were moved to x >= -8 (see _placeCoopYard / GROVE) so they
-   * clear this wing's silhouette entirely. */
+   * scallops buildWingFlat draws actually land inside frame; the third spot at
+   * (-30,14) is deleted outright — it never entered frame at any camera this
+   * file has used. The scarecrow and tire swing were moved to x >= -8 (see
+   * _placeCoopYard / GROVE) so they clear this wing's silhouette entirely. */
   _placeForegroundFrame() {
-    const spots = [{ x: -14, z: 16, s: 1.5 }, { x: 14.5, z: 10, s: 1.9 }]
+    const spots = [{ x: -14, z: 16, s: 1.5, seed: 5100 }, { x: 14.5, z: 10, s: 1.9, seed: 5140 }]
     for (const spot of spots) {
-      const wing = buildWingFlat(0x3a6b2c, 0x5a9440)
+      // Base/rim rotated into the new olive-sage family with everything else
+      // (critic defect 1): 0x3a6b2c/0x5a9440 (H100 S42 L30 / H101 S45 L45) ->
+      // 0x3f4d2f/0x5c6b42 (H82 S24 L25 / H83 S24 L34). Still the darkest mass
+      // in frame — repoussoir wants that — but it is now a dark OLIVE rather
+      // than a dark kelly green, and the rim step is a value step inside one
+      // hue instead of a second saturated colour.
+      const wing = buildWingFlat(0x3f4d2f, 0x5c6b42, spot.seed)
       wing.scale.setScalar(spot.s)
-      this._place(wing, spot.x, spot.z, 1.4 * spot.s, Math.random() * Math.PI * 2)
+      // The card is flat, so its yaw is not decoration: it faces the start eye
+      // (deterministic, replacing a Math.random() spin that could turn a
+      // silhouette card edge-on to the opening shot). From the mid-game aerial
+      // the same card foreshortens to a sliver, which is the point — see
+      // buildWingFlat.
+      const yaw = Math.atan2(START_EYE.x - spot.x, START_EYE.z - spot.z)
+      this._place(wing, spot.x, spot.z, 1.4 * spot.s, yaw)
     }
   }
 

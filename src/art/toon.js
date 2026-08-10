@@ -27,10 +27,26 @@ const INK_PIXELS = 3.4
  * hierarchy is stated in one place instead of scattered as magic numbers.
  */
 export const INK_WEIGHT = {
-  /** The shot's subject and the buildings it acts against. */
+  /** The shot's subject: the hen, the egg, the pig, the figures. */
   HERO: 4.5,
-  /** Midfield props: fences, hay, livestock, crops. The frame's baseline. */
+  /** Characters one step back, and the near props they actually handle. */
   PROP: INK_PIXELS,
+  /**
+   * No ink at all. The weight almost every object in the frame should take.
+   *
+   * A painted cartoon background carries NO black contour: the barn, the silo,
+   * the shed, the fences and the hills are separated from the sky and from each
+   * other by COLOUR, and the only lines on them are thin LIGHT trim — battens,
+   * rake boards, a cream ridge cap. Ink is what marks a drawing as a character
+   * cel laid over that painting, which is why inking the whole frame at HERO /
+   * PROP / FAR is the single loudest "toon shader" tell there is: everything
+   * gets the treatment reserved for the things that move.
+   *
+   * addOutline skips shell construction entirely at this weight — it is not a
+   * hairline, it is nothing — so a background object costs no hull geometry, no
+   * crease extraction and no extra draw call either.
+   */
+  BACKGROUND: 0,
   /**
    * Drawn ground shapes — a road in a cartoon is a shape, not a texture.
    *
@@ -40,9 +56,22 @@ export const INK_WEIGHT = {
    * colour blend. It is a real drawn boundary line now.
    */
   DECAL: 3.2,
-  /** Treeline and horizon landmarks. Fade toward 0 with distance. */
+  /**
+   * Legacy treeline weight, kept so callers that still name it keep compiling.
+   * Scenery takes BACKGROUND now — a horizon landmark holding a 2 px pen is
+   * exactly the uniform full-frame outline this hierarchy exists to break.
+   */
   FAR: 2.0,
 }
+
+/**
+ * Below this many pixels there is no line, only shimmer.
+ *
+ * One constant for both entry points: addOutline refuses to BUILD a shell this
+ * thin, setInkWeight hides one that already exists. INK_WEIGHT.BACKGROUND sits
+ * under it on purpose.
+ */
+const INK_OFF = 0.05
 
 /** Ink never eats more than this share of an object's radius (tiny/far props). */
 const INK_MAX_FRACTION = 0.32
@@ -59,7 +88,10 @@ const INK_MAX_FRACTION = 0.32
  */
 const INTERIOR_RATIO = 0.56
 const INTERIOR_MIN_PIXELS = 1.5
-const interiorWeight = (pixels) => Math.max(INTERIOR_MIN_PIXELS, pixels * INTERIOR_RATIO)
+/** Zero contour means zero interior: the floor must not resurrect a line on an
+ *  object whose whole point is that no pen ever touched it. */
+const interiorWeight = (pixels) =>
+  pixels <= INK_OFF ? 0 : Math.max(INTERIOR_MIN_PIXELS, pixels * INTERIOR_RATIO)
 
 /**
  * Dihedral angle (degrees) above which an edge counts as a form break.
@@ -97,12 +129,32 @@ const SHADOW_FLOOR = 0.4
  */
 const CHARACTER_STEPS = 3
 const CHARACTER_SHADOW_FLOOR = 0.44
+/**
+ * Background architecture and scenery: a plane break that is a TINT, not a step.
+ *
+ * A 2:1 lit/shadow break is the right break for a character and the wrong one
+ * for everything behind it. On a low-poly sphere or cylinder that break lands as
+ * a curved terminator, and a curved terminator is a rendered ball — no amount of
+ * flat colour above and below it makes a painted shape out of it. In a painted
+ * cartoon background the barn wall is ONE red edge to edge, the silo is ONE
+ * blue-teal with a couple of thin darker lines on it, the hill is ONE green:
+ * there is no lit plane and shadow plane on background objects at all.
+ *
+ * 0.84 keeps just enough separation to tell a gable end from a long wall when
+ * they meet at a corner, and not enough to sculpt either of them. Anything that
+ * wants the real break asks for CHARACTER_STEPS (or the 4-step default).
+ */
+const BACKGROUND_STEPS = 2
+const BACKGROUND_SHADOW_FLOOR = 0.84
 /** Hue shift at the dark end: shadows go warm instead of just going down. */
 const SHADOW_WARM = [1.16, 0.97, 0.79]
 
 /** Ramps are cached by step count, so the floor can key off it directly. */
-const shadowFloorFor = (steps) =>
-  steps === CHARACTER_STEPS ? CHARACTER_SHADOW_FLOOR : SHADOW_FLOOR
+function shadowFloorFor(steps) {
+  if (steps === BACKGROUND_STEPS) return BACKGROUND_SHADOW_FLOOR
+  if (steps === CHARACTER_STEPS) return CHARACTER_SHADOW_FLOOR
+  return SHADOW_FLOOR
+}
 
 /**
  * Where the lit family of steps begins, as a ramp position.
@@ -226,8 +278,14 @@ const rampCacheKey = () => 'duknuk-rgb-ramp'
  * Flat cel-shaded material.
  * @param {number|string|THREE.Color} color
  * @param {{steps?: number}} [opts] extra keys pass straight to MeshToonMaterial.
- *   Use `steps: 2` for architecture (one lit plane, one dark plane) and
- *   `steps: 3` for characters.
+ *   The step count IS the profile — three of them, and they are not
+ *   interchangeable:
+ *   - `steps: 2` — background architecture and scenery. Near-flat: the plane
+ *     break is a 0.84 tint, so a wall is one painted shape rather than a lit
+ *     plane and a shadow plane. Everything the camera is not about.
+ *   - `steps: 3` — characters. The full 2:1 break, where it belongs.
+ *   - `steps: 4` (default) — the strong break with extra modelling inside the
+ *     light; for anything that wants sculpting stated explicitly.
  */
 export function toonMaterial(color, { steps = 4, ...rest } = {}) {
   const mat = new THREE.MeshToonMaterial({ color, gradientMap: gradientMap(steps), ...rest })
@@ -649,7 +707,11 @@ function outlineFor(mesh, color, pixels, maxWorldWidth) {
  *   interior?: boolean, interiorPixels?: number, interiorAngle?: number}} [opts]
  *   `thickness` is legacy world-space weight and is ignored — ink weight is a
  *   global constant now. `pixels` places the object in the weight hierarchy;
- *   use `INK_WEIGHT`. `flat: true` inks a ground decal (road ribbon, pond, spill,
+ *   use `INK_WEIGHT`. At `INK_WEIGHT.BACKGROUND` (0, or anything under
+ *   INK_OFF) NO shell and NO interior line is built at all and the call is a
+ *   no-op: a background object is a painted shape, and a sub-pixel contour on
+ *   it is worse than none — it reads as an edge shader over the whole frame.
+ *   `flat: true` inks a ground decal (road ribbon, pond, spill,
  *   patch disc) by DRAWING ITS BOUNDARY — see buildBoundary. Use it on any mesh
  *   that lies in the ground plane; the hull draws nothing on those.
  *
@@ -674,6 +736,12 @@ export function addOutline(
   } = {}
 ) {
   void thickness // signature kept; world-space weight is what we are fixing.
+  // A flat decal has one plane and no interior: every crease it owns is already
+  // its boundary, which the ring draws.
+  const drawContour = pixels > INK_OFF
+  const drawInterior = interior && !flat && interiorPixels > INK_OFF
+  // BACKGROUND weight: nothing to draw, nothing to walk, nothing to build.
+  if (!drawContour && !drawInterior) return object3d
   object3d.updateWorldMatrix(true, true)
   const targets = []
   object3d.traverse((o) => {
@@ -682,16 +750,15 @@ export function addOutline(
     o.userData.hasOutline = true
     targets.push(o)
   })
-  const maxWorldWidth = inkWidthCap(object3d)
-  // A flat decal has one plane and no interior: every crease it owns is already
-  // its boundary, which the ring draws.
-  const inkInside = interior && !flat
+  const maxWorldWidth = drawContour ? inkWidthCap(object3d) : 0
   for (const mesh of targets) {
-    const shell = flat
-      ? boundaryInkFor(mesh, color, pixels)
-      : outlineFor(mesh, color, pixels, maxWorldWidth)
-    if (shell) mesh.add(shell)
-    if (!inkInside || mesh.userData.noInteriorInk) continue
+    if (drawContour) {
+      const shell = flat
+        ? boundaryInkFor(mesh, color, pixels)
+        : outlineFor(mesh, color, pixels, maxWorldWidth)
+      if (shell) mesh.add(shell)
+    }
+    if (!drawInterior || mesh.userData.noInteriorInk) continue
     const lines = interiorFor(mesh, color, interiorPixels, interiorAngle)
     if (lines) mesh.add(lines)
   }
@@ -701,9 +768,9 @@ export function addOutline(
 /**
  * Re-weight an already-inked object's line, in place.
  *
- * The lever for atmospheric perspective: place a treeline, then thin its ink
- * toward 0 with distance so the horizon recedes instead of sitting at the same
- * pen weight as the barn. `pixels <= 0.05` hides the shells outright rather
+ * The lever for atmospheric perspective on the things that DO carry a pen:
+ * thin a figure's ink with distance so it recedes instead of holding the same
+ * weight as the hen. `pixels <= INK_OFF` hides the shells outright rather
  * than drawing a sub-pixel shimmer. Cheap — it only swaps a shared uniform
  * object reference, so call it at placement time, not per frame.
  * @param {THREE.Object3D} object3d an object already passed through addOutline.
@@ -713,7 +780,7 @@ export function addOutline(
 export function setInkWeight(object3d, pixels) {
   object3d.traverse((o) => {
     if (!o.userData?.isOutline || !o.material?.uniforms) return
-    if (pixels <= 0.05) {
+    if (pixels <= INK_OFF) {
       o.visible = false
       return
     }

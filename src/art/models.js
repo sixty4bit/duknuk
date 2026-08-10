@@ -69,7 +69,16 @@ const P = {
   featherInk: 0x8a6338,
   leaf: 0x4fa33c,
   leafLight: 0x74c94b,
-  trunk: 0x8a5a2e,
+  /**
+   * Pale grey-brown, not chocolate.
+   *
+   * The reference's tree is a flat green shape on a stick that is nearly WHITE
+   * — a light note the crown sits on, so the two read as drawn shapes rather
+   * than as a brown cylinder holding up a green ball. At 0x8a5a2e the trunk was
+   * the darkest thing in the middle distance and the most obviously three-
+   * dimensional; lifted here it recedes and the canopy does the reading.
+   */
+  trunk: 0xa89880,
   suit: 0x4a6fb0,
   // Small-prop palette. Every one of these is a saturated note the eye can
   // land on between the barn red and the grass green — a prop in a cartoon is
@@ -99,10 +108,20 @@ const P = {
 
 // ---------------------------------------------------------------- primitives
 
-// Ramp steps for the shape currently under construction. Two for architecture
-// (one lit plane, one dark plane per form) and three for characters — more
-// than that and the bands sit adjacent on curved geometry and read as a
-// gradient, which is exactly what flat cartoon colour is not.
+/**
+ * Ramp steps for the shape currently under construction — which is the same
+ * choice as PAINTED versus DRAWN (see toon.js `toonMaterial`).
+ *
+ * ARCH (2) is the background profile: the plane break is a shallow tint, so a
+ * barn wall is one flat red edge to edge and a hay mound is one flat ochre, the
+ * way a painted cartoon background does it. It used to be a 2:1 break, which on
+ * a low-poly lathe or cylinder lands as a curved terminator — a modelled
+ * object, and no amount of flat colour either side of it reads otherwise.
+ *
+ * CHARACTER (3) keeps the full break. The hen, the pig and the figures are what
+ * the shot is about; they are the only things that get sculpted, exactly as
+ * they are the only things that get ink.
+ */
 const STEPS = { ARCH: 2, CHARACTER: 3 }
 let steps = STEPS.CHARACTER
 
@@ -647,10 +666,13 @@ function buildCoop() {
   const door = at(new THREE.Object3D(), 0, 0, 1.98)
   g.add(door)
   g.userData.door = door
-  // The chicken's home and the frame's second read: hero weight, like the barn.
-  // Interior ink is what separates the two roof planes from each other and the
-  // doorway trim from the wall — all of it flat red-on-red without it.
-  return addOutline(g, { pixels: INK_WEIGHT.HERO, interior: true })
+  // Painted, not drawn. The coop is a building the hen acts against, and a
+  // building in a cartoon background carries no black contour at all: the roof
+  // reads against the wall on VALUE (P.barnRoof is a full step under
+  // P.barnRed), the doorway reads because it is the darkest note on the box,
+  // and the cream boards down the corners and across the front are the only
+  // lines on it — light trim, exactly as the ref's white battens are.
+  return addOutline(g, { pixels: INK_WEIGHT.BACKGROUND })
 }
 
 /** Red hen-house on stumpy legs, ~2.6 wide, ramp up to a dark doorway. */
@@ -874,12 +896,19 @@ function buildBarn() {
   }
   g.add(barnDoors(), barnLoft())
   g.add(at(box(0.16, DOOR.h - 0.12, 0.12, P.barnRed), 0, (DOOR.h - 0.12) / 2, 4.24))
-  // The biggest silhouette on the farm has to carry the heaviest line, or it
-  // dissolves into the field at viewing size — and the biggest COLLECTION of
-  // forms needs the second pen most: without interior ink the gambrel meets
-  // the wall on a value change alone and the doors are two cream rectangles
-  // floating on red.
-  return addOutline(g, { pixels: INK_WEIGHT.HERO, interior: true })
+  // The barn is the biggest PAINTED shape in the frame, and it carries no pen.
+  //
+  // It used to take the heaviest line in the shot on the argument that the
+  // biggest silhouette needs it — which is true of a character and false of a
+  // building. In a painted cartoon background the barn is separated from the
+  // sky by colour alone, and every line on it is LIGHT: the cream rakes down
+  // both gables, the ridge cap, the fascias, the wall-head trim, the door
+  // surround and the X-braces. All of that is geometry and all of it survives.
+  // What goes is the black contour that made the whole frame read as a toon
+  // shader — the gambrel break is carried by barnRoof against barnRoofUp
+  // against barnRed, three painted values, which is how a background painter
+  // states it.
+  return addOutline(g, { pixels: INK_WEIGHT.BACKGROUND })
 }
 
 /** Classic Saturday-morning barn: faceted gambrel with a hard knuckle crease,
@@ -999,9 +1028,12 @@ function buildFence(length) {
   // reads as a fence, and its loose end can't swing below the grass.
   const breakAt = spans >= 4 ? 1 + Math.floor(rnd() * (spans - 2)) : -1
   FENCE.railY.forEach((y, row) => g.add(fenceRails(rnd, xs, y, row === 0 ? breakAt : -1)))
-  // Every post and rail is a box, so the interior pass draws the corner of each
-  // one: cream lumber on a cream fence is otherwise a single pale mass.
-  return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
+  // A fence in a painted background is a run of pale battens against green —
+  // read on value, contoured by nothing. The lumber is P.cream, the lightest
+  // note on the farm, so it separates from the field without help; ink on it
+  // turned the longest straight edge in the frame into the loudest line in the
+  // frame, which is the opposite of what a fence is for.
+  return addOutline(g, { pixels: INK_WEIGHT.BACKGROUND })
 }
 
 /** Post-and-rail fence running along +X, centered on the origin. */
@@ -1072,14 +1104,11 @@ function buildHaystack(seed) {
   const stack = scl(new THREE.Group(), 1, 1, 0.85 + rnd() * 0.32)
   stack.add(mound, hayTufts(rnd, h, rad, bulge))
   g.add(stack)
-  // The mound is a building-sized mass, so it carries a building's line or it
-  // dissolves into the field; the straw stays a step lighter so the decoration
-  // never out-draws the shape it sits on.
-  // Interior ink on the mound alone: the lathe's course lips are real profile
-  // corners and want the line. The tufts are 7-sided cones whose only creases
-  // are tessellation seams, so they stay clean.
-  addOutline(mound, { pixels: INK_WEIGHT.HERO, interior: true })
-  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+  // Scenery: one flat ochre shape with a deckled top edge, no pen anywhere on
+  // it. The course lips are still cut into the SILHOUETTE, which is where they
+  // did their work — a lathe profile that steps in and out reads as stacked
+  // courses against the sky whether or not a line is drawn on the knuckle.
+  return addOutline(g, { pixels: INK_WEIGHT.BACKGROUND })
 }
 
 /**
@@ -1249,39 +1278,87 @@ function leafPair(rnd) {
  */
 const CANOPY_GRIP = { blob: 0.9, conifer: 0.3, shrub: 1.05 }
 
-/** Root flare. A tree does not meet the ground as a cylinder pushed into a
- *  plane; it widens into it. Cheap, and it is half of what tells a viewer that
- *  the thing is planted rather than placed. */
-function treeRoots(r) {
-  return at(tube(r * 1.05, r * 2.15, r * 1.3, P.trunk, 10), 0, r * 0.64, 0)
-}
-
-/** @param grip extra length drawn ABOVE `h`, buried inside the canopy. */
+/**
+ * A stick, not a turned column.
+ *
+ * The tapered tube with a root flare was doing the opposite of the reference:
+ * a wide-based cone in saturated brown is a 3D cylinder standing in grass, and
+ * the flare is the detail that most insists the thing was modelled. A painted
+ * cartoon tree has a near-untapered PALE trunk that meets the ground on a hard
+ * line and nothing else — the flare, the taper and the dark brown all went, and
+ * P.trunk is a pale grey-brown now (see the palette), so the stick reads as a
+ * light note against the canopy instead of a chocolate post.
+ *
+ * @param grip extra length drawn ABOVE `h`, buried inside the canopy.
+ */
 function treeTrunk(rnd, h, grip) {
   const trunk = new THREE.Group()
-  const r = 0.2 + rnd() * 0.12
+  const r = 0.16 + rnd() * 0.07
   const drawn = h + grip
-  trunk.add(at(rot(tube(r * 0.9, r * 1.75, drawn, P.trunk, 10), 0, 0, 0.04), 0, drawn / 2, 0))
-  trunk.add(treeRoots(r))
+  trunk.add(at(rot(tube(r * 0.94, r, drawn, P.trunk, 8), 0, 0, 0.02), 0, drawn / 2, 0))
   if (rnd() > 0.45) {
-    const branch = rot(tube(0.12, 0.16, 0.85, P.trunk, 8), 0, rnd() * Math.PI * 2, 0.85)
-    trunk.add(at(branch, -0.38, h * 0.92, 0.1))
+    const branch = rot(tube(0.075, 0.09, 0.85, P.trunk, 6), 0, rnd() * Math.PI * 2, 0.85)
+    trunk.add(at(branch, -0.3, h * 0.92, 0.1))
   }
   return trunk
 }
 
-/** Broccoli mass: 4–8 balls scattered on a ring, so gaps bite the silhouette. */
-function blobCanopy(rnd, [leaf, light], aspect) {
-  const canopy = new THREE.Group()
-  const count = 4 + Math.floor(rnd() * 5)
-  canopy.add(at(ball(1.05 + rnd() * 0.35, light, 18), 0, 0.4, 0))
-  for (let i = 0; i < count; i++) {
-    const a = (i / count) * Math.PI * 2 + rnd() * 0.9
-    const spread = 0.8 + rnd() * 0.45
-    const r = 0.7 + rnd() * 0.5
-    const c = rnd() > 0.5 ? leaf : light
-    canopy.add(at(ball(r, c, 16), Math.cos(a) * spread, (rnd() - 0.45) * 0.95, Math.sin(a) * spread))
+/**
+ * The drawn edge of a painted canopy: alternating long and short radii round
+ * the centre, every one of them jittered.
+ *
+ * This is the whole read. A cartoon tree is a FLAT shape whose contour is
+ * irregular — scalloped, deckled, scribbled — and the eye identifies it from
+ * that contour alone at any distance. 12–18 points is enough for the edge to
+ * look cut by hand and few enough that no single lobe becomes a facet.
+ */
+function scallopShape(rnd, r, squash = 1) {
+  const points = 12 + Math.floor(rnd() * 7)
+  const s = new THREE.Shape()
+  for (let i = 0; i < points; i++) {
+    const a = (i / points) * Math.PI * 2
+    const k = r * (i % 2 ? 0.72 : 1) * (0.88 + rnd() * 0.26)
+    const [x, y] = [Math.cos(a) * k, Math.sin(a) * k * squash]
+    if (i === 0) s.moveTo(x, y)
+    else s.lineTo(x, y)
   }
+  s.closePath()
+  return s
+}
+
+/**
+ * Foliage as flat painted shapes, and why there are two of them crossed.
+ *
+ * A canopy used to be four to eight SPHERES scattered on a ring. Under any toon
+ * ramp a sphere is a rendered ball — that is not a shading problem with a
+ * shading fix, it is the geometry announcing itself — so the whole treeline read
+ * as low-poly 3D foliage no matter how the ramp was tuned. The replacement is
+ * the reference's own construction: one flat shape, one flat tone, an irregular
+ * contour, extruded just enough (0.3–0.5) to have a body and catch the ground
+ * plane rather than being a zero-thickness card.
+ *
+ * Two of them at 90°, because world.js yaws every tree it places and a single
+ * card seen edge-on is a green sliver. Both take the SAME tone and both are cut
+ * from their own scallop, so from any bearing the silhouette is one flat mass
+ * with a ragged edge, and the crossing seam never shows: with the background
+ * ramp (STEPS.ARCH) there is no value break between the two faces to see.
+ */
+const CANOPY_DEPTH = [0.3, 0.5]
+
+function flatCanopy(rnd, tone, r, squash) {
+  const canopy = new THREE.Group()
+  const [lo, hi] = CANOPY_DEPTH
+  const depth = lo + rnd() * (hi - lo)
+  for (const yaw of [0, Math.PI / 2]) {
+    const card = extruded(scallopShape(rnd, r, squash), depth, tone)
+    canopy.add(rot(card, 0, yaw, (rnd() - 0.5) * 0.22))
+  }
+  return canopy
+}
+
+/** Broad crown: one flat shape, per-instance mass and aspect. */
+function blobCanopy(rnd, [leaf], aspect) {
+  const canopy = flatCanopy(rnd, leaf, 1.7 + rnd() * 0.5, 0.86 + rnd() * 0.22)
   return scl(canopy, aspect, 1 / Math.sqrt(aspect), aspect)
 }
 
@@ -1313,22 +1390,12 @@ function coniferCanopy(rnd, [leaf]) {
   return scl(canopy, girth, 1 + rnd() * 0.45, girth)
 }
 
-/** Low wide shrub mass: squats under the blobs and breaks up the skyline. */
-function shrubCanopy(rnd, [leaf, light]) {
-  const canopy = new THREE.Group()
-  // Core lobe ON the trunk axis. The scattered ring alone is a wreath: on a few
-  // seeds every lobe cleared the middle and the stick came out of the top of
-  // the shrub into open air. Deliberately takes no rnd() draw, so adding it
-  // leaves every seeded shrub otherwise identical to the one before it.
-  canopy.add(at(scl(ball(0.95, light, 16), 1, 0.8, 1), 0, -0.1, 0))
-  const count = 5 + Math.floor(rnd() * 4)
-  for (let i = 0; i < count; i++) {
-    const a = (i / count) * Math.PI * 2 + rnd() * 0.7
-    const spread = 0.55 + rnd() * 1.0
-    const blob = scl(ball(0.8 + rnd() * 0.5, i % 2 ? leaf : light, 16), 1, 0.72, 1)
-    canopy.add(at(blob, Math.cos(a) * spread, (rnd() - 0.5) * 0.4, Math.sin(a) * spread))
-  }
-  return canopy
+/** Low wide shrub mass: the same flat shape, squatted, so it breaks up the
+ *  skyline under the taller crowns. Takes the lighter of the pair, which is the
+ *  only place the treeline's internal value variation lives now — one tone per
+ *  tree, differing tree to tree, rather than lobes differing inside one crown. */
+function shrubCanopy(rnd, [, light]) {
+  return flatCanopy(rnd, light, 1.6 + rnd() * 0.5, 0.5 + rnd() * 0.16)
 }
 
 function treeCanopy(kind, rnd, tones, trunkH) {
@@ -1342,10 +1409,12 @@ function treeCanopy(kind, rnd, tones, trunkH) {
 const TRUNK_H = { blob: [1.7, 0.7], conifer: [1.15, 0.5], shrub: [0.85, 0.3] }
 
 /** Insurance, not decoration: a tree with an empty canopy group must never
- *  leave this function, whatever a kind's scatter happens to roll. */
-function ensureCanopy(canopy, tones) {
+ *  leave this function, whatever a kind's build happens to roll. The fallback
+ *  is the same flat painted shape as the real thing — a sphere here would put
+ *  a rendered ball on the one tree nobody was looking at. */
+function ensureCanopy(canopy, rnd, tones) {
   if (canopy.children.length) return canopy
-  canopy.add(ball(1.15, tones[1], 16))
+  canopy.add(flatCanopy(rnd, tones[1], 1.6, 0.9))
   return canopy
 }
 
@@ -1372,21 +1441,22 @@ function buildTree(seed) {
   // model that a traversal can remove half of.
   const trunk = treeTrunk(rnd, trunkH, CANOPY_GRIP[kind])
   const tones = leafPair(rnd)
-  const canopy = ensureCanopy(treeCanopy(kind, rnd, tones, trunkH), tones)
+  const canopy = ensureCanopy(treeCanopy(kind, rnd, tones, trunkH), rnd, tones)
   lean.add(trunk, canopy)
   lean.name = 'tree-unit'
   g.add(lean, treeShadow(kind))
   g.userData.kind = kind
   g.userData.parts = { trunk, canopy }
-  // Trees are scenery, not subject: a thin line lets the treeline sit behind
-  // the buildings. world.js should thin it further toward 0 with distance via
-  // toon.js `setInkWeight` once each tree is placed.
-  return addOutline(g, { pixels: INK_WEIGHT.FAR })
+  // A tree is the purest painted shape in the frame: flat green mass, pale
+  // stick, deckled contour, no pen. The ragged edge IS the drawing — an ink
+  // hull tracing it only restated the outline the shape already has, in black,
+  // which is what put the treeline on the same pen weight as the hen.
+  return addOutline(g, { pixels: INK_WEIGHT.BACKGROUND })
 }
 
 /**
- * Cartoon tree, ~3–5.5 tall: broccoli blob, conifer or shrub, leaning and
- * hue-shifted per instance.
+ * Cartoon tree, ~3–5.5 tall: flat scalloped crown, conifer cone stack or low
+ * shrub on a straight pale trunk, leaning and hue-shifted per instance.
  * @param {number} [seed] omit for a fresh variant per call; pass one to pin it.
  */
 export function makeTree(seed = nextSeed()) {
@@ -1422,8 +1492,11 @@ export function makeSalesman() {
 // game object, all of them are evidence that somebody works here.
 //
 // Every builder below returns a Group standing on the ground at its own
-// origin, facing +Z, inked at PROP weight so the whole set sits one step
-// behind the hen and the buildings in the line hierarchy.
+// origin, facing +Z. They are BACKGROUND weight — painted shapes, no pen —
+// except the ones with an animal in them (the bird on its post, the scarecrow
+// and his crow, the pecking hen), which are cels standing on the painting and
+// keep PROP ink. That split is the whole hierarchy: ink means "this is a
+// character", and a frame where the milk cans have it too means nothing.
 
 const UP = new THREE.Vector3(0, 1, 0)
 const v3 = (x, y, z) => new THREE.Vector3(x, y, z)
@@ -1779,7 +1852,9 @@ function buildLaundryLine(seed) {
     const cloth = item.kind === 'shirt' ? shirt(item.color) : overalls(item.color)
     g.add(hang(cloth, ropePoint(a, b, sag, item.t), rnd))
   }
-  return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
+  // Background dressing: cream, red and denim garments against green already
+  // separate on hue and value, and nobody in the game ever touches them.
+  return addOutline(g, { pixels: INK_WEIGHT.BACKGROUND })
 }
 
 /**
@@ -1829,7 +1904,10 @@ function buildCrateStack(seed) {
   const [cx, cz] = [-1.42, 0.62]
   g.add(at(groundDecal(blobShape(rnd, 0.58), P.grain), cx, 0, cz))
   g.add(grainPips(rnd, cx, cz))
-  return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
+  // The slats and bands are painted a step apart in value and do the describing;
+  // the spill keeps its DECAL boundary, which is a drawn ground shape's edge
+  // rather than a contour round a solid.
+  return addOutline(g, { pixels: INK_WEIGHT.BACKGROUND })
 }
 
 /**
@@ -1905,9 +1983,10 @@ function buildWheelbarrow() {
   g.add(at(contactShadow(0.3, 0.22), 0, 0.012, 0.78))
   g.add(at(contactShadow(0.52, 0.26), 0, 0.012, -0.48))
   g.userData.restYaw = BARROW_REST_YAW
-  // Interior ink is what puts the circle back in the wheel: the tyre's two cap
-  // rims are the only edges in the whole prop that describe it as round.
-  return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
+  // Yard dressing, not a handled prop: red tray, cream cap rail, wood frame and
+  // near-black tyre are four painted values already. Promote it back to PROP if
+  // a character is ever animated pushing it.
+  return addOutline(g, { pixels: INK_WEIGHT.BACKGROUND })
 }
 
 /** Red barrow parked on its wheel and legs, handles up and back. ~2.4 long
@@ -1936,7 +2015,7 @@ function buildMilkCan() {
     const handle = meshOf(new THREE.TorusGeometry(0.09, 0.028, 6, 12, Math.PI), P.metalDark)
     g.add(at(rot(handle, 0, Math.PI / 2, 0), 0.26 * s, 0.64, 0))
   }
-  return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
+  return addOutline(g, { pixels: INK_WEIGHT.BACKGROUND })
 }
 
 /** Steel milk can with a red lid, ~1.05 tall. A cool metal note against all
@@ -2022,9 +2101,11 @@ function buildTrough() {
   const g = new THREE.Group()
   g.add(troughTub(), troughWater(), troughRim())
   g.add(at(contactShadow(TROUGH.len * 0.52, TROUGH.depth * 0.56, 0.36), 0, 0.012, 0))
-  // Interior ink is the point of the whole rebuild: without it the rim, the
-  // wall and the water are three flat planes stacked with no line between them.
-  return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
+  // Rim, wall and water are separated by paint — woodDark lip over wood plank
+  // over waterDeep, with a lit strip along the lip and a glare streak on the
+  // surface. Those are the LIGHT lines a background painter would use, and they
+  // survive; the black contour that made a tub look modelled does not.
+  return addOutline(g, { pixels: INK_WEIGHT.BACKGROUND })
 }
 
 /** Plank water trough, ~2.2 long, 0.84 to the rim, water inset below the lip
@@ -2071,9 +2152,10 @@ function buildPond(radius, seed) {
     g.add(detail(at(rot(box(w, 0.02, d, P.waterLight), 0, yaw, 0), x, 0.055, z)))
   }
   g.add(pondReeds(rnd, radius))
-  // Only the reeds are left uninked by the decal passes above; PROP weight puts
-  // them a step under the buildings and a step over the drawn waterline.
-  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+  // The waterline and the mud bank are DECAL boundaries drawn by groundDecal —
+  // a drawn ground shape keeps its edge. The reeds standing out of it are
+  // scenery and take none.
+  return addOutline(g, { pixels: INK_WEIGHT.BACKGROUND })
 }
 
 /**
@@ -2101,7 +2183,7 @@ function buildTireSwing(height) {
   g.add(pivot)
   g.userData.pivot = pivot
   g.userData.parts = { pivot }
-  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+  return addOutline(g, { pixels: INK_WEIGHT.BACKGROUND })
 }
 
 /**

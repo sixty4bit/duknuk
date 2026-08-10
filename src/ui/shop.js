@@ -50,9 +50,36 @@ const STYLE_CSS = `
 .duk-shop-btn:hover:not(:disabled) { transform: scale(1.04) rotate(0deg); }
 .duk-shop-btn:active:not(:disabled) { transform: scale(0.96) rotate(0deg); }
 .duk-shop-btn:disabled {
+  /* A painted title card is opaque — no translucent chrome that lets the 3D
+     world show through. Unaffordable state is a flat desaturated card fill
+     with a muted ink border, expressed by overriding the shared ink/cream/
+     red tokens locally so every icon technique (background fill, var-driven
+     border, triangle border-color) mutes together without a grayscale
+     filter — the icons are hand-built shapes, so they just get a muted
+     variant fill instead of a photographic desaturation effect. */
   cursor: not-allowed;
-  filter: grayscale(0.8);
-  opacity: 0.55;
+  --duk-ink: #7d7158;
+  --duk-cream: #e3dcc9;
+  --duk-red: #b98f76;
+  background: var(--duk-cream);
+  border-color: var(--duk-ink);
+  box-shadow: 5px 6px 0 var(--duk-ink);
+}
+.duk-shop-btn:disabled .duk-shop-icon--mature {
+  background: #cfc6ad;
+}
+.duk-shop-btn:disabled .duk-shop-icon--mature::before,
+.duk-shop-btn:disabled .duk-shop-icon--mature::after {
+  background: var(--duk-ink);
+}
+.duk-shop-btn:disabled .duk-shop-icon--collector::before {
+  background: #cbbf9e;
+}
+.duk-shop-btn:disabled .duk-shop-icon--collector::after {
+  background: #d8cead;
+}
+.duk-shop-btn:disabled .duk-shop-icon--chicken::after {
+  border-top-color: #cbbf9e;
 }
 .duk-shop-btn.duk-bounce { animation: duk-shop-bounce 0.4s ease-out; }
 .duk-shop-info {

@@ -9,24 +9,6 @@ const BARN_RED = '#c8352b'
 
 const STYLE_CSS = `
 #hud { --duk-ink: ${INK}; --duk-cream: ${CREAM}; --duk-red: ${BARN_RED}; }
-.duk-vignette {
-  position: fixed; inset: 0; pointer-events: none;
-  background:
-    radial-gradient(ellipse 75% 70% at 50% 46%,
-      rgba(26, 18, 8, 0) 60%,
-      rgba(48, 30, 12, 0.16) 100%);
-  mix-blend-mode: multiply;
-}
-.duk-glow {
-  /* warm key-light direction, screen blend so it adds light rather than
-     draining it — pairs with the weak multiply vignette above */
-  position: fixed; inset: 0; pointer-events: none;
-  background:
-    radial-gradient(ellipse 60% 55% at 78% 8%,
-      rgba(255, 226, 168, 0.16) 0%,
-      rgba(255, 226, 168, 0) 60%);
-  mix-blend-mode: screen;
-}
 .duk-panel {
   background: var(--duk-cream);
   border: 3px solid var(--duk-ink);
@@ -254,19 +236,9 @@ export class HUD {
     this._moneyValue = 0
     this._patchHideTimer = null
     this._tickRaf = null
-    this._buildVignette()
     this._buildMoney()
     this._buildHint()
     this._buildToastLayer()
-  }
-
-  _buildVignette() {
-    const vignette = document.createElement('div')
-    vignette.className = 'duk-vignette'
-    this.root.appendChild(vignette)
-    const glow = document.createElement('div')
-    glow.className = 'duk-glow'
-    this.root.appendChild(glow)
   }
 
   _buildMoney() {

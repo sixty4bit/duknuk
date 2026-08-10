@@ -118,6 +118,47 @@ function seededRand(seed) {
   return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296)
 }
 
+// A cell's fill must read as a hand-drawn irregular blob, not a literal
+// pixel-art square: ctx.fillRect stamped one axis-aligned CELL_SIZE box per
+// cell, so every grazed-out patch came out as a staircase of 8-bit blocks —
+// the only rigid grid anywhere in an otherwise all-flat-shapes frame, and
+// exactly where depletion is supposed to read as a drawn boundary advancing.
+// POLY_RADIUS_MIN is picked so two ADJACENT cells' blobs always overlap even
+// at minimum jitter (0.6 + 0.6 = 1.2 cells > the 1-cell spacing between
+// centers): same-band neighbors still read as one contiguous flat shape,
+// full coverage, no stray gaps — the irregularity only shows up as wobble
+// exactly at a BAND boundary, where the two overlapping blobs disagree on
+// color and whichever painted second wins the overlap.
+const POLY_RADIUS_MIN = 0.6
+const POLY_RADIUS_SPREAD = 0.3
+const POLY_VERT_MIN = 6
+const POLY_VERT_SPREAD = 3
+const POLY_ANGLE_JITTER = 0.35
+// Distinct multiplier from the one _paintGrassStrokes keys its own seed off
+// (2654435761, Knuth's) so a cell's fill wobble and its blade-tick jitter
+// don't visually lock-step — two different-looking noise fields from the
+// same deterministic LCG shape, not one pattern doing double duty.
+const POLY_SEED_MULT = 2246822519
+
+// Pixel-space vertices of one cell's blob, seeded off the cell's own (i, j)
+// so the shape is stable across redraws (regrowth/depletion only changes
+// which band's color fills it, never the outline itself) — same contract as
+// the seeded stroke positions in _paintGrassStrokes.
+function cellBlobPoints(i, j, px, seed) {
+  const rnd = seededRand(seed)
+  const count = POLY_VERT_MIN + Math.floor(rnd() * POLY_VERT_SPREAD)
+  const cx = (i + 0.5) * px
+  const cy = (j + 0.5) * px
+  const points = []
+  for (let v = 0; v < count; v++) {
+    const base = (v / count) * Math.PI * 2
+    const angle = base + (rnd() - 0.5) * POLY_ANGLE_JITTER
+    const r = (POLY_RADIUS_MIN + rnd() * POLY_RADIUS_SPREAD) * px
+    points.push([cx + Math.cos(angle) * r, cy + Math.sin(angle) * r])
+  }
+  return points
+}
+
 // Boundary sample points, evenly spaced around a plain circle. Both the fill
 // disc and the ink-outline rim are built from these exact points, so they can
 // never drift apart — the fill can neither bleed past nor fall short of the
@@ -327,18 +368,32 @@ export class Patch {
     return path
   }
 
+  // Path2D for one cell's blob, in the same pixel coordinates _paintFill
+  // paints in. Seeded off the cell's own grid index with POLY_SEED_MULT (not
+  // _paintGrassStrokes' multiplier) so the fill wobble is a different noise
+  // field from the blade-tick jitter.
+  _cellBlobPath(i, j) {
+    const seed = ((j * this._cols + i) * POLY_SEED_MULT) >>> 0
+    const points = cellBlobPoints(i, j, this._pxPerCell, seed)
+    const path = new Path2D()
+    points.forEach(([x, y], idx) => (idx === 0 ? path.moveTo(x, y) : path.lineTo(x, y)))
+    path.closePath()
+    return path
+  }
+
   // Hard-edged per-cell fill straight onto the visible texture canvas,
-  // clipped to the boundary so no square cell corner can ever poke past the
-  // rim. Every cell paints exactly one of the three posterized band colors
-  // from foodColor — no blur pass runs over this afterward, so a cell
-  // boundary between two food levels stays a hard step in the final pixels,
-  // matching the flat-shaded, hard-stepped-shadow language the rest of the
-  // frame uses (see toon.js's HARD_SHADOW). A soft gradient here previously
-  // read as a photographic smear sitting inside an otherwise flat-shaded cel.
+  // clipped to the boundary so no blob can ever poke past the rim. Every
+  // cell paints exactly one of the three posterized band colors from
+  // foodColor — no blur pass runs over this afterward, so a cell boundary
+  // between two food levels stays a hard step in the final pixels, matching
+  // the flat-shaded, hard-stepped-shadow language the rest of the frame uses
+  // (see toon.js's HARD_SHADOW). A soft gradient here previously read as a
+  // photographic smear; a plain fillRect square here previously read as a
+  // literal 8-bit pixel grid — cellBlobPath's jittered polygon is what turns
+  // that hard step into a hand-drawn wobbly edge instead of either.
   _paintFill() {
     const ctx = this._ctx
     const cols = this._cols
-    const px = this._pxPerCell
     const scratch = new THREE.Color()
     ctx.clearRect(0, 0, this._canvas.width, this._canvas.height)
     ctx.save()
@@ -349,7 +404,7 @@ export class Patch {
         if (f < 0) continue
         foodColor(f, scratch)
         ctx.fillStyle = `#${scratch.getHexString()}`
-        ctx.fillRect(i * px, j * px, px + 1, px + 1)
+        ctx.fill(this._cellBlobPath(i, j))
       }
     }
     ctx.restore()
