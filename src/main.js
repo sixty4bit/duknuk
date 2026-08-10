@@ -31,14 +31,108 @@ controls.maxPolarAngle = Math.PI * 0.46
 controls.minPolarAngle = Math.PI * 0.34
 controls.minDistance = 10
 controls.maxDistance = 140
-// Left button is the game's. Camera: right-drag pans, middle-drag rotates,
-// wheel zooms, arrow keys pan.
+// Left button is the game's. Camera: right-drag pans, middle-drag rotates.
+// Wheel/trackpad/keyboard input is handled by the custom handlers below, not
+// OrbitControls: its per-keypress pan (keyPanSpeed 24 ≈ 0.36 world units a
+// tap) was imperceptible — carl-fyffe reported arrow keys as flat dead in
+// Chrome — and its wheel handler can't tell a mouse wheel (zoom) from a
+// trackpad two-finger scroll (pan).
 controls.mouseButtons.LEFT = null
 controls.mouseButtons.MIDDLE = THREE.MOUSE.ROTATE
 controls.mouseButtons.RIGHT = THREE.MOUSE.PAN
-controls.listenToKeyEvents(window)
-controls.keyPanSpeed = 24
 controls.update()
+
+// --- camera: pan / zoom shared by wheel, trackpad and arrow keys -----------
+
+const CAM = { panSpeed: 26, zoomMin: 10, zoomMax: 140 }
+
+/** Slide camera and target together along the ground plane. dx/dy are in
+ * screen pixels; world distance scales with zoom so a swipe covers the same
+ * fraction of the screen at any height. */
+function panCameraPx(dxPx, dyPx) {
+  const dist = camera.position.distanceTo(controls.target)
+  const worldPerPx = (2 * dist * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / renderer.domElement.clientHeight
+  const fwd = new THREE.Vector3().subVectors(controls.target, camera.position)
+  fwd.y = 0
+  fwd.normalize()
+  const right = new THREE.Vector3(-fwd.z, 0, fwd.x)
+  const move = right.multiplyScalar(dxPx * worldPerPx).addScaledVector(fwd, dyPx * worldPerPx)
+  camera.position.add(move)
+  controls.target.add(move)
+}
+
+/** Multiply camera distance by `scale`, clamped, without touching the orbit
+ * angles — zoom never fights the polar limits. */
+function dollyCamera(scale) {
+  const offset = new THREE.Vector3().subVectors(camera.position, controls.target)
+  const dist = THREE.MathUtils.clamp(offset.length() * scale, CAM.zoomMin, CAM.zoomMax)
+  offset.setLength(dist)
+  camera.position.copy(controls.target).add(offset)
+}
+
+/** Mouse wheels tick in coarse detents (deltaMode in lines/pages, or big
+ * pixel steps with no horizontal component); trackpad two-finger scrolls are
+ * a continuous stream of small, often diagonal pixel deltas. Wheel zooms —
+ * the shipped desktop-mouse behavior — while two-finger scroll pans like a
+ * map, matching what phone/tablet touch already does here. */
+function looksLikeMouseWheel(e) {
+  return e.deltaMode !== WheelEvent.DOM_DELTA_PIXEL || (e.deltaX === 0 && Math.abs(e.deltaY) >= 50)
+}
+
+// Capture-phase on window so this runs BEFORE OrbitControls' own wheel
+// handler on the canvas (same-node listeners fire in registration order, and
+// OrbitControls registered first) — stopPropagation keeps its zoom-only wheel
+// behavior out of the way while leaving its touch handling (phone pinch/pan,
+// which already works) untouched.
+addEventListener('wheel', (e) => {
+  if (e.target !== renderer.domElement) return // HUD/shop keep native scroll
+  e.preventDefault() // the page must never scroll or browser-zoom over the game
+  e.stopPropagation()
+  if (e.ctrlKey) return dollyCamera(Math.exp(e.deltaY * 0.012)) // Chrome/Firefox report trackpad pinch as ctrl+wheel
+  if (looksLikeMouseWheel(e)) return dollyCamera(Math.exp(Math.sign(e.deltaY) * 0.22))
+  panCameraPx(-e.deltaX, -e.deltaY)
+}, { passive: false, capture: true })
+
+// Safari desktop reports trackpad pinch as GestureEvents, not ctrl+wheel, and
+// without preventDefault it zooms the whole page — carl's "pinch does browser
+// zoom". e.scale is cumulative since gesturestart, so track the last value.
+let lastGestureScale = 1
+addEventListener('gesturestart', (e) => {
+  e.preventDefault()
+  lastGestureScale = 1
+})
+addEventListener('gesturechange', (e) => {
+  e.preventDefault()
+  if (e.scale > 0) dollyCamera(lastGestureScale / e.scale)
+  lastGestureScale = e.scale
+})
+addEventListener('gestureend', (e) => e.preventDefault())
+
+// Arrow keys pan continuously while held (per-frame in the animate loop):
+// OrbitControls' per-keypress nudge (keyPanSpeed 24 ≈ 13px a tap) was
+// invisible at farm scale, which read as "arrow keys do nothing".
+const heldPanKeys = new Set()
+const PAN_KEYS = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] }
+addEventListener('keydown', (e) => {
+  if (!(e.key in PAN_KEYS)) return
+  e.preventDefault()
+  heldPanKeys.add(e.key)
+})
+addEventListener('keyup', (e) => heldPanKeys.delete(e.key))
+addEventListener('blur', () => heldPanKeys.clear())
+
+function updateKeyPan(dt) {
+  if (!heldPanKeys.size) return
+  let dx = 0
+  let dz = 0
+  for (const k of heldPanKeys) {
+    dx += PAN_KEYS[k][0]
+    dz += PAN_KEYS[k][1]
+  }
+  // panCameraPx scales with zoom; feed it pixels-per-second worth of pan.
+  const pxPerSec = renderer.domElement.clientHeight * 0.55
+  panCameraPx(dx * pxPerSec * dt, dz * pxPerSec * dt)
+}
 
 const world = new World(scene)
 const economy = new Economy()
@@ -511,10 +605,12 @@ window.__duk = { world, chickens, coops, collectors, economy, camera, screenXY, 
 
 const clock = new THREE.Clock()
 renderer.setAnimationLoop(() => {
+  const frameDt = Math.min(clock.getDelta(), 0.25)
+  updateKeyPan(frameDt)
   controls.update()
   // Fixed-step accumulator: on slow machines a frame can span several sim
   // steps — step repeatedly so game time tracks wall time instead of crawling.
-  let acc = Math.min(clock.getDelta(), 0.25)
+  let acc = frameDt
   while (acc > 1e-4) {
     const dt = Math.min(acc, 0.05)
     acc -= dt
