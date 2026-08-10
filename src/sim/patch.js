@@ -4,6 +4,18 @@ import { toonMaterial, addOutline, INK_WEIGHT } from '../art/toon.js'
 // Tunable: seconds for a fully-bare cell to regrow to fully-lush.
 export const REGROW_SECONDS = 90
 
+// Patch-wide regrowth budget (food/s), the single balance knob for the core
+// loop (issue #5). Regrowth used to run per-cell — every partial cell grew at
+// 1/REGROW_SECONDS simultaneously, so a patch with a handful of grazed cells
+// out-regrew a hen's ~0.02 food/s effective consumption (walk/lay overhead
+// cuts the 0.4/s peck rate to a ~7% duty cycle) and fullness pinned at
+// 96-98%: the starving signal was unreachable at every tier. Now the whole
+// patch shares this one budget, deliberately set BELOW that consumption
+// floor so a parked mature hen just barely eats a patch bare before regrowth
+// wins — and a bigger tier means a bigger reservoir (more cells of stored
+// food), not a faster refill, which is what makes the upgrade worth buying.
+export const REGROW_BUDGET_PER_SEC = 0.012
+
 const CELL_SIZE = 1
 const BUCKET_LEVELS = 64
 const BEST_SPOT_MIN_FOOD = 0.08
@@ -515,15 +527,51 @@ export class Patch {
     return count > 0 ? sum / count : 0
   }
 
-  update(dt) {
-    const inc = dt / REGROW_SECONDS
+  // Index of the most-depleted partial cell NOT already on the grow front.
+  _mostDepletedCell(exclude) {
     const food = this._food
+    let best = -1
+    let bestFood = Infinity
     for (let k = 0; k < food.length; k++) {
       const f = food[k]
-      if (f < 0 || f >= 1) continue
-      food[k] = Math.min(1, f + inc)
+      if (f < 0 || f >= 1 || exclude.includes(k)) continue
+      if (f < bestFood) {
+        bestFood = f
+        best = k
+      }
     }
-    this._refreshIfDirty()
+    return best
+  }
+
+  // Regrowth spends the patch-wide budget through a persistent "grow front":
+  // a short list of cells that keep receiving the budget, each capped at the
+  // 1/REGROW_SECONDS visual re-green rate, until they are individually full.
+  // New cells join the front most-depleted-first, only when the cells already
+  // on it can't absorb the whole budget. Stickiness is the point — a naive
+  // re-sort every tick round-robins the budget across every equally-bare cell
+  // so they all rise in invisible lock-step; pinning it to the same one-or-two
+  // cells clusters regrowth into visibly recovering spots that a waiting
+  // hen's bestSpot search can actually find.
+  update(dt) {
+    const food = this._food
+    const front = (this._growFront ??= []).filter((k) => food[k] >= 0 && food[k] < 1)
+    let budget = REGROW_BUDGET_PER_SEC * dt
+    const perCellCap = dt / REGROW_SECONDS
+    let spent = false
+    for (let slot = 0; budget > 1e-9; slot++) {
+      if (slot >= front.length) {
+        const next = this._mostDepletedCell(front)
+        if (next < 0) break
+        front.push(next)
+      }
+      const k = front[slot]
+      const grow = Math.min(perCellCap, 1 - food[k], budget)
+      food[k] += grow
+      budget -= grow
+      spent ||= grow > 0
+    }
+    this._growFront = front
+    if (spent) this._refreshIfDirty()
   }
 
   moveTo(center) {
