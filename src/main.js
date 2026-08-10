@@ -337,7 +337,7 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return
   downAt = { x: e.clientX, y: e.clientY, t: performance.now() }
   const hit = groundPoint(e)
-  downEntity = hit && !placing.type ? pickEntity(hit) : null
+  downEntity = hit && !placing.type ? pickEntity(e) : null
 })
 
 renderer.domElement.addEventListener('pointermove', (e) => {
