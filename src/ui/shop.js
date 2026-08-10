@@ -19,7 +19,7 @@ const MAX_TIER = 3
 const BUTTONS = [
   { id: 'buy-chicken', label: 'Chicken', price: 50, icon: 'chicken' },
   { id: 'upgrade-patch', label: 'Upgrade Patch', price: 40, icon: 'upgrade', needsChicken: true },
-  { id: 'buy-mature', label: 'Mature Hen', price: 200, icon: 'mature', needsChicken: true },
+  { id: 'buy-mature', label: 'Mature Hen', price: 200, icon: 'mature' },
   { id: 'buy-feeder', label: 'Feeder', price: 100, icon: 'feeder' },
   { id: 'buy-coop', label: 'Coop', price: 250, icon: 'coop' },
   { id: 'hire-collector', label: 'Collector', price: 300, icon: 'collector' },
