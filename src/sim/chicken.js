@@ -10,6 +10,22 @@ const TURN_RATE = 6 // rad/s
 
 const PECK_INTERVAL = 0.45
 const PECK_AMOUNT = 0.18
+// A peck tears up more grass than she digests — scratched-up turf, not food.
+// This is the depletion-pace knob (carl 2026-08-10: "patch depletion needs to
+// be a little faster still"): raising the peck RATE barely moves effective
+// consumption because the eat/walk-home/lay cycle caps digestion at ~1 belly
+// per ~37s, but waste scales patch drain directly without touching the egg
+// economy. At 2x, net drain vs the 0.012 regrowth budget lands ~3x faster
+// than digestion-only grazing.
+const GRAZE_WASTE = 2
+// A peck yielding under a quarter of the ask means the cell under her beak is
+// grazed out — walk to better grass instead of sipping what regrowth trickles
+// back. Waiting for exactly zero livelocked her: the patch's grow front
+// deliberately refills the MOST-depleted cell, which is precisely the one she
+// is standing on, so consumed stayed a hair above zero forever and a hen
+// could park on one bare cell drinking the whole regrowth budget while her
+// belly took minutes to fill.
+const PECK_MIN_YIELD = PECK_AMOUNT * GRAZE_WASTE * 0.25
 const PECK_DIP_ANGLE = 0.9
 
 const SAD_CLUCK_INTERVAL = 6
@@ -271,10 +287,10 @@ export class Chicken {
     if (this.eatTimer > 0) return
     this.eatTimer = PECK_INTERVAL
     const p = this.mesh.position
-    const consumed = this.patch.eatAt(p.x, p.z, PECK_AMOUNT)
-    this.belly = Math.min(1, this.belly + Math.max(0, consumed))
+    const consumed = this.patch.eatAt(p.x, p.z, PECK_AMOUNT * GRAZE_WASTE)
+    this.belly = Math.min(1, this.belly + Math.max(0, consumed / GRAZE_WASTE))
     if (this.belly >= 1) { this._enterWalkHome(); return }
-    if (consumed <= 0) this._handleDepletedCell()
+    if (consumed < PECK_MIN_YIELD) this._handleDepletedCell()
   }
 
   _handleDepletedCell() {
