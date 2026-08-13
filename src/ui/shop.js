@@ -181,6 +181,29 @@ const STYLE_CSS = `
   background: #e8bf63; border: 2px solid var(--duk-ink); border-bottom: none;
 }
 
+/* Collapse toggle: same painted-card language at coin-badge size, parked at
+   the stack's foot (first child of the column-reverse flex). Collapsed, it is
+   the only thing left of the shop — a '$' card that reads "open the shop". */
+.duk-shop-toggle {
+  pointer-events: auto;
+  align-self: flex-end;
+  width: 44px; height: 44px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--duk-cream);
+  border: 4.5px solid var(--duk-ink);
+  border-radius: 14px 10px 16px 11px;
+  box-shadow: 5px 6px 0 var(--duk-ink);
+  color: var(--duk-ink);
+  font-family: 'Arial Black', Impact, 'Anton', 'Arial Narrow Bold', Haettenschweiler, sans-serif;
+  font-size: 18px; line-height: 1;
+  cursor: pointer;
+  transform: rotate(-0.8deg);
+  transition: transform 0.08s ease-out;
+}
+.duk-shop-toggle:hover { transform: scale(1.06) rotate(0deg); }
+.duk-shop-toggle:active { transform: scale(0.94) rotate(0deg); }
+.duk-shop--collapsed .duk-shop-btn { display: none; }
+
 @keyframes duk-shop-bounce {
   0% { transform: scale(1); }
   30% { transform: scale(1.22, 0.82); }
@@ -210,12 +233,40 @@ export class Shop {
     this.shopEl = document.createElement('div')
     this.shopEl.className = 'duk-shop'
     this.buttons = {}
+    this.collapsed = false
+    // First child of the column-reverse stack = bottom-most on screen, so the
+    // toggle stays put while the cards above it come and go.
+    this.shopEl.appendChild(this._buildToggle())
     for (const cfg of BUTTONS) {
       const btn = this._buildButton(cfg)
       this.shopEl.appendChild(btn)
       this.buttons[cfg.id] = btn
     }
     this.root.appendChild(this.shopEl)
+  }
+
+  _buildToggle() {
+    const btn = document.createElement('button')
+    btn.className = 'duk-shop-toggle'
+    btn.addEventListener('click', () => {
+      this._bounce(btn)
+      this.setCollapsed(!this.collapsed)
+    })
+    this.toggleEl = btn
+    this._syncToggle()
+    return btn
+  }
+
+  setCollapsed(collapsed) {
+    this.collapsed = collapsed
+    this.shopEl.classList.toggle('duk-shop--collapsed', collapsed)
+    this._syncToggle()
+  }
+
+  _syncToggle() {
+    this.toggleEl.textContent = this.collapsed ? '$' : '▾'
+    this.toggleEl.title = this.collapsed ? 'Open the shop' : 'Tuck the shop away'
+    this.toggleEl.setAttribute('aria-expanded', String(!this.collapsed))
   }
 
   _buildButton(cfg) {
