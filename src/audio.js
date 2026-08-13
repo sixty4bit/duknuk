@@ -138,6 +138,28 @@ function thunk(c, at) {
   noiseBurst(c, at, 0.08, 0.3, 200)
 }
 
+// Raptor cry: one long falling scream with fast vibrato, doubled by a
+// quieter partial a fifth up so it screeches instead of reading as a siren.
+export function screech() {
+  const c = getCtx()
+  const t0 = c.currentTime
+  tone(c, {
+    at: t0,
+    dur: 0.75,
+    type: 'sawtooth',
+    freq: 2300,
+    glide: [
+      [0.1, 2000],
+      [0.75, 850],
+    ],
+    vibrato: { rate: 27, depth: 90 },
+    peak: 0.45,
+    decay: 0.8,
+  })
+  tone(c, { at: t0 + 0.03, dur: 0.6, type: 'sawtooth', freq: 3200, glide: [[0.6, 1300]], peak: 0.14, decay: 0.65 })
+  noiseBurst(c, t0, 0.1, 0.2, 2800)
+}
+
 // Starving signal: low descending 3-note cluck.
 export function cluckSad() {
   const c = getCtx()

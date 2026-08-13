@@ -6,6 +6,8 @@ import { Chicken, TIER_RADII, MAX_TIER } from './sim/chicken.js'
 import { Coop } from './sim/coop.js'
 import { Feeder } from './sim/feeder.js'
 import { Collector } from './sim/collector.js'
+import { Guardian, GUARDIAN_TIERS } from './sim/guardian.js'
+import { HawkRaids } from './sim/hawk.js'
 import { Economy } from './economy.js'
 import { HUD } from './ui/hud.js'
 import { Shop } from './ui/shop.js'
@@ -146,8 +148,38 @@ const coops = []
 const chickens = []
 const feeders = []
 const collectors = []
+const guardians = []
 let selectedChicken = null
 let selectedCoop = null
+let selectedGuardian = null
+
+// Hens get names so a hawk can take SOMEBODY, not a unit. Assigned round-robin
+// at purchase; only the toasts ever use them.
+const HEN_NAMES = [
+  'Henrietta', 'Doris', 'Beatrice', 'Clementine', 'Gertrude', 'Mabel',
+  'Prudence', 'Agnes', 'Winnifred', 'Petunia', 'Olive', 'Blanche',
+  'Myrtle', 'Dot', 'Fanny', 'Pearl', 'Goldie', 'Tilly', 'Edith', 'Florence',
+]
+let henNameIdx = 0
+
+const pickFrom = (arr) => arr[Math.floor(Math.random() * arr.length)]
+
+const KILL_STORIES = [
+  (n) => `${n} was carried off by a hawk. She always said she wanted to see the world.`,
+  (n) => `A hawk got ${n}. The sky has one more chicken in it now.`,
+  (n) => `${n} is gone. The hawk left a thank-you note. It was rude.`,
+  (n) => `Farewell, ${n}. The flock held a minute of pecking in her honor.`,
+]
+const FOIL_STORIES = {
+  rooster: (n) => `A hawk dove at ${n} — the rooster ran it off. He will not shut up about it.`,
+  dog: (n) => `The dog chased the hawk clean over the fence. ${n} didn't even look up.`,
+  shotgun: (n) => `BLAM! Warning shot. The hawk reconsidered ${n} from a very great distance.`,
+  turret: (n) => `The turret beeped once. The hawk filed a complaint and left ${n} alone.`,
+}
+const MISS_STORIES = [
+  (n) => `A hawk circled ${n}... and thought better of it.`,
+  (n) => `${n} froze. The hawk blinked first.`,
+]
 
 function coopOf(chicken) {
   return coops.find((c) => c.chickens.includes(chicken)) ?? coops[0]
@@ -178,12 +210,61 @@ function handleEgg(chicken, { premium = true } = {}) {
 function addChicken(coop, { tier = 0 } = {}) {
   const hen = new Chicken(scene, world, coop)
   hen.setTier(tier)
+  hen.henName = HEN_NAMES[henNameIdx++ % HEN_NAMES.length]
   hen.onEgg = (info) => handleEgg(hen, info)
   coop.chickens.push(hen)
   chickens.push(hen)
   registerPickRoot(hen.mesh, 'chicken', hen)
   return hen
 }
+
+function addGuardian(pos) {
+  const g = new Guardian(scene, world, pos)
+  guardians.push(g)
+  registerPickRoot(g.mesh, 'guardian', g)
+  return g
+}
+
+// --- hawks -----------------------------------------------------------------
+
+let hawkHintShown = false
+
+function killChicken(hen) {
+  // Raids exclude the carried hen at launch, but she can be grabbed during
+  // the ~1.4s dive — drop the carry cleanly rather than dangle its ring.
+  if (carry.hen === hen) {
+    scene.remove(carry.ring)
+    carry.ring.geometry.dispose()
+    carry.ring.material.dispose()
+    carry.hen = null
+    carry.ring = null
+  }
+  if (selectedChicken === hen) select(null, null)
+  const home = coopOf(hen)
+  const ci = home.chickens.indexOf(hen)
+  if (ci >= 0) home.chickens.splice(ci, 1)
+  const i = chickens.indexOf(hen)
+  if (i >= 0) chickens.splice(i, 1)
+  pickRoots.delete(hen.mesh)
+  hen.patch?.dispose()
+  hen.dispose()
+  audio.cluckSad()
+  hud.toast(pickFrom(KILL_STORIES)(hen.henName ?? 'A hen'), { mood: 'sad' })
+  if (!hawkHintShown) {
+    hawkHintShown = true
+    hud.setHint('Hawks hunt far from the coops — buy a Rooster and paint a protection zone.')
+  }
+  refreshShop()
+}
+
+const hawks = new HawkRaids(scene, {
+  targets: () => chickens.filter((c) => c !== carry.hen),
+  guardians,
+  coops,
+  onKill: killChicken,
+  onFoil: (hen, g) => hud.toast(FOIL_STORIES[g.spec.id](hen.henName ?? 'the hen')),
+  onMiss: (hen) => hud.toast(pickFrom(MISS_STORIES)(hen.henName ?? 'a hen')),
+})
 
 function collectFrom(coop) {
   const value = coop.collect()
@@ -195,14 +276,26 @@ function collectFrom(coop) {
   hud.floatDollar(s.x, s.y)
 }
 
-function select(chicken, coop) {
+function select(chicken, coop, guardian = null) {
   selectedChicken?.setSelected(false)
   selectedCoop?.setSelected(false)
+  selectedGuardian?.setSelected(false)
   selectedChicken = chicken ?? null
   selectedCoop = coop ?? null
+  selectedGuardian = guardian ?? null
   selectedChicken?.setSelected(true)
   selectedCoop?.setSelected(true)
+  selectedGuardian?.setSelected(true)
   refreshShop()
+}
+
+/** What the protection button offers right now: the selected guardian's next
+ *  tier, MAX at the chain's top, or a fresh rooster when nothing is selected. */
+function protectionOffer() {
+  if (!selectedGuardian) return { label: GUARDIAN_TIERS[0].label, price: GUARDIAN_TIERS[0].cost }
+  const next = selectedGuardian.nextSpec
+  if (!next) return { label: selectedGuardian.spec.label, price: 0, maxed: true }
+  return { label: next.label, price: next.cost }
 }
 
 function refreshShop() {
@@ -210,8 +303,9 @@ function refreshShop() {
     money: economy.money,
     selection: selectedChicken
       ? { type: 'chicken', tier: selectedChicken.tier }
-      : selectedCoop ? { type: 'coop' } : null,
+      : selectedCoop ? { type: 'coop' } : selectedGuardian ? { type: 'guardian' } : null,
     tiers: { current: selectedChicken?.tier ?? 0, max: MAX_TIER },
+    protection: protectionOffer(),
   })
 }
 
@@ -238,17 +332,18 @@ function registerPickRoot(mesh, kind, obj) {
 // pixel-hunting and a near-miss used to fall through to the bare-ground
 // branch — which MOVES the selected hen's patch. Coops get a fallback too:
 // their mesh-ray pick fails when the click lands beside the building.
-const PICK_RADIUS = { chicken: 2.2, coop: 3.5 }
+const PICK_RADIUS = { chicken: 2.2, coop: 3.5, guardian: 2.6 }
 // Wider than the pick radii: clicks in the ring between "picked it" and
 // "clearly meant the ground" do nothing at all, rather than relocating the
 // patch. Patch-move is the least reversible click on the farm, so it demands
 // clear ground.
-const PATCH_MOVE_CLEARANCE = { chicken: 3.2, coop: 4.5 }
+const PATCH_MOVE_CLEARANCE = { chicken: 3.2, coop: 4.5, guardian: 3.6 }
 
 function nearAnyEntity(hit, radii) {
   return (
     chickens.some((c) => Math.hypot(hit.x - c.position.x, hit.z - c.position.z) < radii.chicken) ||
-    coops.some((c) => Math.hypot(hit.x - c.position.x, hit.z - c.position.z) < radii.coop)
+    coops.some((c) => Math.hypot(hit.x - c.position.x, hit.z - c.position.z) < radii.coop) ||
+    guardians.some((g) => Math.hypot(hit.x - g.position.x, hit.z - g.position.z) < radii.guardian)
   )
 }
 
@@ -275,6 +370,11 @@ function pickEntity(e) {
   }
   // Hens win ties: they are smaller targets and the likelier intent when both
   // are in reach (a hen pecking right beside her coop).
+  if (best) return best
+  for (const g of guardians) {
+    const d = Math.hypot(hit.x - g.position.x, hit.z - g.position.z)
+    if (d < PICK_RADIUS.guardian && (!best || d < best.d)) best = { kind: 'guardian', obj: g, d }
+  }
   if (best) return best
   for (const coop of coops) {
     const d = Math.hypot(hit.x - coop.position.x, hit.z - coop.position.z)
@@ -362,14 +462,19 @@ function endCarry(hit) {
 
 const placing = { type: null, ring: null }
 
+const PLACEMENT_RING_RADIUS = { coop: 2.6, feeder: 1.0, guardian: GUARDIAN_TIERS[0].radius }
+const PLACEMENT_HINTS = {
+  coop: 'Place the new coop — it needs elbow room from the others.',
+  feeder: 'Place the feeder near a hungry hen’s patch.',
+  guardian: 'Paint the protection zone — hens inside the ring are safe from hawks.',
+}
+
 function beginPlacement(type) {
   cancelPlacement()
   placing.type = type
-  placing.ring = makeFootprintRing(type === 'coop' ? 2.6 : 1.0)
+  placing.ring = makeFootprintRing(PLACEMENT_RING_RADIUS[type])
   scene.add(placing.ring)
-  hud.setHint(type === 'coop'
-    ? 'Place the new coop — it needs elbow room from the others.'
-    : 'Place the feeder near a hungry hen’s patch.')
+  hud.setHint(PLACEMENT_HINTS[type])
 }
 
 function cancelPlacement() {
@@ -394,6 +499,10 @@ function confirmPlacement(hit) {
     if (!economy.spend(Coop.COST)) return
     addCoop({ x: hit.x, z: hit.z })
     hud.toast(coops.length === 2 ? 'New coop! Eggs now wait at coops until you visit.' : 'New coop raised!')
+  } else if (type === 'guardian') {
+    if (!economy.spend(GUARDIAN_TIERS[0].cost)) return
+    select(null, null, addGuardian({ x: hit.x, z: hit.z }))
+    hud.toast('Rooster on patrol — hawks hate him. Click grass to move his zone.')
   } else {
     if (!economy.spend(Feeder.COST)) return
     const feeder = new Feeder(scene, world, { x: hit.x, z: hit.z })
@@ -431,6 +540,25 @@ shop.onAction = (id) => {
     },
     'buy-feeder': () => economy.canAfford(Feeder.COST) && beginPlacement('feeder'),
     'buy-coop': () => economy.canAfford(Coop.COST) && beginPlacement('coop'),
+    'protection': () => {
+      if (!selectedGuardian) {
+        economy.canAfford(GUARDIAN_TIERS[0].cost) && beginPlacement('guardian')
+        return
+      }
+      const next = selectedGuardian.nextSpec
+      if (!next || !economy.spend(next.cost)) return
+      const oldMesh = selectedGuardian.mesh // upgrade() rebuilds it
+      selectedGuardian.upgrade()
+      pickRoots.delete(oldMesh)
+      registerPickRoot(selectedGuardian.mesh, 'guardian', selectedGuardian)
+      const lines = {
+        dog: 'The dog is on duty. The rooster has opinions about this.',
+        shotgun: 'Shotgun guy hired. He mostly hits sky, which is where the hawks are.',
+        turret: 'Fully automated poultry defense. What could possibly go wrong?',
+      }
+      hud.toast(lines[selectedGuardian.spec.id])
+      refreshShop()
+    },
     'hire-collector': () => {
       if (coops.length < 2) return hud.toast('One coop collects itself — hire him when you spread out.', { mood: 'sad' })
       if (!economy.spend(Collector.COST)) return
@@ -492,9 +620,21 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   if (moved > 6 || !hit) return // camera drag
 
   if (downEntity?.kind === 'chicken') return select(downEntity.obj, null)
+  if (downEntity?.kind === 'guardian') return select(null, null, downEntity.obj)
   if (downEntity?.kind === 'coop') {
     select(null, downEntity.obj)
     collectFrom(downEntity.obj)
+    return
+  }
+
+  // Guardian selected: a ground click repaints his protection zone — even
+  // over a patch, since covering a hen's patch is exactly the intent. No
+  // near-miss dead zone here: clicks close to an entity already resolved to
+  // selecting it above, and with a zone radius of 9+ a couple units of
+  // placement slop never changes who is covered.
+  if (selectedGuardian) {
+    if (!world.isWalkable(hit.x, hit.z)) return hud.toast('He can’t guard from there.', { mood: 'sad' })
+    selectedGuardian.moveTo({ x: hit.x, z: hit.z })
     return
   }
 
@@ -544,6 +684,7 @@ function seedMidgame() {
     hen.assignPatch(hen.patch)
   })
   feeders.push(new Feeder(scene, world, { x: -9, z: 2 }), new Feeder(scene, world, { x: 25, z: 20 }))
+  addGuardian({ x: -10, z: 2 }) // a rooster minding coop 0's yard
   const guy = new Collector(scene, world, coops)
   guy.onCollect = (v) => { economy.money += v; economy.onChange?.() }
   collectors.push(guy)
@@ -601,7 +742,7 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight)
 })
 
-window.__duk = { world, chickens, coops, collectors, economy, camera, screenXY, sel: () => ({ chicken: selectedChicken, coop: selectedCoop }) } // debug/testing handle
+window.__duk = { world, chickens, coops, collectors, guardians, hawks, economy, camera, screenXY, sel: () => ({ chicken: selectedChicken, coop: selectedCoop, guardian: selectedGuardian }) } // debug/testing handle
 
 const clock = new THREE.Clock()
 renderer.setAnimationLoop(() => {
@@ -619,6 +760,8 @@ renderer.setAnimationLoop(() => {
       if (hen !== carry.hen) hen.update(dt) // a carried hen dangles, FSM on hold
     }
     for (const guy of collectors) guy.update(dt)
+    for (const g of guardians) g.update(dt)
+    hawks.update(dt)
   }
   renderer.render(scene, camera)
 })

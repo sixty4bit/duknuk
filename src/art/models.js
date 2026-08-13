@@ -2232,3 +2232,188 @@ function buildPeckingHen(seed) {
 export function makePeckingHen(seed = nextSeed()) {
   return withSteps(STEPS.CHARACTER, () => buildPeckingHen(seed))
 }
+
+// ------------------------------------------------------------- guardians
+//
+// The protection chain (rooster → guard dog → shotgun guy → turret) and the
+// hawk that makes it necessary. All characters — they act, so they carry ink
+// per the hierarchy above. Each stands on the ground at its origin facing +Z
+// and publishes the parts its idle animation moves on `userData.parts`.
+
+const ROOSTER_TAIL = 0x1f5e46 // deep bottle-green, classic rooster sickle
+
+function roosterHead() {
+  const head = at(new THREE.Group(), 0, 1.14, 0.2)
+  head.add(ball(0.16, P.hen, 16))
+  // Three comb lobes, tallest centered — the read that says rooster, not hen.
+  for (const [dz, r] of [[-0.07, 0.07], [0.01, 0.1], [0.09, 0.065]]) {
+    head.add(at(scl(ball(r, P.comb, 10), 0.45, 1.15, 1), 0, 0.17 + r * 0.5, dz))
+  }
+  head.add(at(rot(spike(0.055, 0.16, P.beak, 8), Math.PI / 2), 0, 0.02, 0.2))
+  head.add(at(scl(ball(0.06, P.comb, 8), 0.5, 1.5, 0.8), 0, -0.12, 0.12)) // wattle
+  for (const s of [-1, 1]) head.add(at(detail(ball(0.03, P.dark, 8)), 0.11 * s, 0.05, 0.1))
+  return head
+}
+
+function roosterTail() {
+  // Sickle fan: long flattened teardrops arcing back and DOWN — the drooping
+  // curve is what separates a rooster's tail from a hen's upright fan.
+  const tail = at(rot(new THREE.Group(), 0.35), 0, 0.86, -0.28)
+  const arcs = [
+    [-0.55, 0.5, ROOSTER_TAIL],
+    [-0.8, 0.42, ROOSTER_TAIL],
+    [-1.05, 0.34, P.comb],
+    [-0.3, 0.44, ROOSTER_TAIL],
+  ]
+  for (const [tilt, len, color] of arcs) {
+    tail.add(rot(at(scl(ball(0.1, color, 10), 0.28, len / 0.1, 1), 0, len * 0.75, 0), tilt, 0, 0))
+  }
+  return tail
+}
+
+function buildRooster() {
+  const g = new THREE.Group()
+  const rig = scl(new THREE.Group(), 1.15)
+  for (const s of [-1, 1]) rig.add(at(noInterior(tube(0.035, 0.05, 0.36, P.beak, 8)), 0.1 * s, 0.18, 0))
+  rig.add(at(scl(ball(0.32, P.hen), 1, 1.12, 1.22), 0, 0.66, -0.03)) // body
+  rig.add(at(scl(ball(0.24, P.hay, 16), 0.85, 1, 0.85), 0, 0.7, 0.16)) // gold bib
+  rig.add(strut(v3(0, 0.8, 0.1), v3(0, 1.1, 0.18), 0.12, P.hen, 10)) // neck
+  const head = roosterHead()
+  rig.add(head, roosterTail())
+  for (const s of [-1, 1]) {
+    rig.add(at(rot(scl(ball(0.17, P.henShade, 12), 0.4, 0.85, 1.1), 0, 0, s * 0.35), 0.29 * s, 0.66, 0))
+  }
+  g.add(rig, contactShadow(0.5, 0.4, 0.34))
+  g.userData.parts = { head }
+  return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
+}
+
+/** Strutting rooster, ~1.5 tall: triple comb, gold bib, drooping sickle tail. */
+export function makeRooster() {
+  return withSteps(STEPS.CHARACTER, buildRooster)
+}
+
+function dogHead() {
+  const head = at(new THREE.Group(), 0, 1.06, 0.34)
+  head.add(scl(ball(0.24, P.hay, 16), 1, 0.95, 1))
+  head.add(at(scl(ball(0.13, P.cream, 12), 1, 0.8, 1.1), 0, -0.07, 0.18)) // muzzle
+  head.add(at(detail(ball(0.05, P.dark, 8)), 0, -0.02, 0.29)) // nose
+  for (const s of [-1, 1]) {
+    head.add(at(detail(ball(0.032, P.dark, 8)), 0.1 * s, 0.08, 0.18))
+    // Floppy ears: flattened teardrops hung from the crown, tips forward.
+    head.add(at(rot(scl(ball(0.1, P.hayDark, 10), 0.45, 1.35, 0.8), 0.5, 0, s * 0.25), 0.2 * s, 0.12, 0.02))
+  }
+  return head
+}
+
+function buildGuardDog() {
+  const g = new THREE.Group()
+  // Sitting: haunches a wide squashed ball, chest a cone leaning back.
+  g.add(at(scl(ball(0.4, P.hay, 16), 1.1, 0.8, 1.05), 0, 0.36, -0.18))
+  g.add(at(rot(scl(tube(0.22, 0.38, 0.72, P.hay, 14), 1, 1, 0.9), -0.25), 0, 0.66, 0.08))
+  g.add(at(scl(ball(0.2, P.cream, 12), 0.8, 1.1, 0.6), 0, 0.62, 0.31)) // chest blaze
+  const head = dogHead()
+  g.add(head)
+  g.add(at(noInterior(tube(0.045, 0.045, 0.12, P.barnRed, 10)), 0, 0.88, 0.3)) // collar
+  for (const s of [-1, 1]) {
+    g.add(at(rot(noInterior(tube(0.06, 0.075, 0.5, P.hay, 8)), -0.2, 0, s * 0.08), 0.22 * s, 0.28, 0.32)) // forelegs
+    g.add(at(scl(ball(0.09, P.cream, 8), 1, 0.6, 1.3), 0.22 * s, 0.05, 0.42)) // paws
+  }
+  const tail = at(rot(scl(ball(0.09, P.hayDark, 8), 0.5, 1, 3.2), 0.5, 0.4), -0.28, 0.28, -0.5)
+  g.add(tail)
+  g.add(contactShadow(0.62, 0.5, 0.34))
+  g.userData.parts = { head, tail }
+  return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
+}
+
+/** Sitting golden farm dog, ~1.3 tall: floppy ears, cream blaze, red collar. */
+export function makeGuardDog() {
+  return withSteps(STEPS.CHARACTER, buildGuardDog)
+}
+
+function buildShotgunGuy() {
+  const g = new THREE.Group()
+  for (const s of [-1, 1]) g.add(at(box(0.18, 0.8, 0.22, P.denim), 0.13 * s, 0.4, 0))
+  g.add(at(tube(0.27, 0.33, 0.55, P.denim, 12), 0, 1.06, 0)) // overall trunk
+  g.add(at(box(0.4, 0.3, 0.3, P.denim), 0, 1.4, 0)) // bib
+  g.add(at(tube(0.3, 0.3, 0.24, P.cream, 12), 0, 1.28, 0)) // shirt band
+  for (const s of [-1, 1]) {
+    // Arms folded low across the gun: sleeves angled in from the shoulders.
+    g.add(at(rot(tube(0.075, 0.075, 0.52, P.cream, 8), 0.9, 0, -0.5 * s), 0.3 * s, 1.3, 0.14))
+  }
+  // The shotgun: dark double barrel + wood stock, cradled chest-high.
+  const gun = at(rot(new THREE.Group(), 0, 0, -0.18), 0, 1.22, 0.3)
+  for (const dy of [0.028, -0.028]) gun.add(at(rot(noInterior(tube(0.03, 0.03, 0.9, P.dark, 8)), 0, 0, Math.PI / 2), 0, dy, 0))
+  gun.add(at(rot(box(0.3, 0.09, 0.07, P.woodDark), 0, 0, -0.12), -0.5, -0.02, 0))
+  g.add(gun)
+  g.add(at(ball(0.25, P.shell, 16), 0, 1.78, 0)) // head
+  g.add(at(rot(spike(0.06, 0.14, P.pigDark, 8), Math.PI / 2), 0, 1.72, 0.24)) // nose
+  g.add(at(scl(ball(0.14, P.cream, 10), 1.2, 0.5, 0.8), 0, 1.62, 0.16)) // beard
+  g.add(at(tube(0.21, 0.21, 0.16, P.hay, 14), 0, 2.02, 0)) // hat crown
+  g.add(at(tube(0.38, 0.38, 0.045, P.hay, 16), 0, 1.95, 0)) // hat brim
+  g.add(contactShadow(0.45, 0.36, 0.34))
+  g.userData.parts = { gun }
+  return addOutline(g, { pixels: INK_WEIGHT.HERO, interior: true })
+}
+
+/** Denim-overalled farmhand, ~2.1 tall, shotgun cradled across his chest. */
+export function makeShotgunGuy() {
+  return withSteps(STEPS.CHARACTER, buildShotgunGuy)
+}
+
+function buildTurret() {
+  const g = new THREE.Group()
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI * 2
+    g.add(strut(v3(Math.cos(a) * 0.55, 0, Math.sin(a) * 0.55), v3(0, 0.75, 0), 0.06, P.metalDark, 8))
+    g.add(at(scl(ball(0.09, P.metalDark, 8), 1, 0.5, 1), Math.cos(a) * 0.55, 0.045, Math.sin(a) * 0.55))
+  }
+  // The head: riveted dome on a yoke, twin barrels, one blinking alarm light.
+  // Deliberately barn-red — farm equipment, not military hardware.
+  const head = at(new THREE.Group(), 0, 0.95, 0)
+  head.add(scl(ball(0.34, P.barnRed, 16), 1, 0.78, 1))
+  head.add(at(tube(0.36, 0.36, 0.1, P.metal, 16), 0, -0.16, 0))
+  const barrels = at(new THREE.Group(), 0, 0.05, 0.24)
+  for (const s of [-1, 1]) {
+    barrels.add(at(rot(noInterior(tube(0.055, 0.07, 0.62, P.metalDark, 10)), Math.PI / 2), 0.11 * s, 0, 0.28))
+    barrels.add(at(noInterior(tube(0.075, 0.075, 0.06, P.dark, 10)), 0.11 * s, 0, 0.6))
+  }
+  head.add(barrels)
+  const light = at(ball(0.08, P.comb, 10), 0, 0.32, 0)
+  head.add(at(noInterior(tube(0.03, 0.03, 0.12, P.metalDark, 8)), 0, 0.26, 0), light)
+  g.add(head, contactShadow(0.62, 0.62, 0.32))
+  g.userData.parts = { head, barrels, light }
+  return addOutline(g, { pixels: INK_WEIGHT.PROP, interior: true })
+}
+
+/** Tripod-mounted barn-red auto-turret, ~1.5 tall, twin barrels + alarm light. */
+export function makeTurret() {
+  return withSteps(STEPS.CHARACTER, buildTurret)
+}
+
+function hawkWing(side) {
+  // One wing as two slabs: broad inner panel, swept tip panel — a drawn
+  // silhouette with a bent leading edge, not a featureless plank.
+  const wing = at(new THREE.Group(), side * 0.22, 0.02, 0)
+  wing.add(at(rot(scl(box(0.7, 0.05, 0.42, P.woodDark), 1, 1, 1), 0, 0, side * 0.06), side * 0.32, 0, -0.02))
+  wing.add(at(rot(scl(box(0.5, 0.045, 0.3, P.dark), 1, 1, 1), 0, side * 0.25, side * 0.18), side * 0.85, 0.03, -0.1))
+  return wing
+}
+
+function buildHawk() {
+  const g = new THREE.Group()
+  g.add(scl(ball(0.2, P.woodDark, 14), 1, 0.8, 1.9)) // body, nose +Z
+  g.add(at(ball(0.13, P.woodDark, 12), 0, 0.04, 0.36))
+  g.add(at(rot(spike(0.045, 0.1, P.hay, 8), Math.PI / 2), 0, 0.02, 0.5)) // beak
+  g.add(at(rot(scl(box(0.3, 0.04, 0.34, P.woodDark), 0, 0, 0), 0, 0, 0), 0, 0.01, -0.42)) // tail fan
+  const wingL = hawkWing(-1)
+  const wingR = hawkWing(1)
+  g.add(wingL, wingR)
+  g.userData.parts = { wingL, wingR }
+  return addOutline(g, { pixels: INK_WEIGHT.PROP })
+}
+
+/** Gliding hawk silhouette, wingspan ~2.6, origin at the body (airborne use). */
+export function makeHawk() {
+  return withSteps(STEPS.CHARACTER, buildHawk)
+}

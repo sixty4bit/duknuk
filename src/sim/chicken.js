@@ -553,6 +553,19 @@ export class Chicken {
     }
   }
 
+  /** Full scene removal — the hawk got her. The selection ring and thought
+   *  bubble are children of the mesh, so one traversal takes everything;
+   *  in-flight eggs are separate scene objects and go individually. */
+  dispose() {
+    this.scene.remove(this.mesh)
+    disposeObject(this.mesh)
+    for (const e of this.eggs) {
+      this.scene.remove(e.mesh)
+      disposeObject(e.mesh)
+    }
+    this.eggs.length = 0
+  }
+
   _animateEgg(e) {
     const t = Math.min(1, e.age / EGG_POP_TIME)
     const pop = t < 1 ? 1 + 0.3 * Math.sin(t * Math.PI) : 1

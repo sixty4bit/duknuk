@@ -23,6 +23,9 @@ const BUTTONS = [
   { id: 'buy-feeder', label: 'Feeder', price: 100, icon: 'feeder' },
   { id: 'buy-coop', label: 'Coop', price: 250, icon: 'coop' },
   { id: 'hire-collector', label: 'Collector', price: 300, icon: 'collector' },
+  // One slot for the whole protection chain: label/price follow the selected
+  // guardian's next tier via setState's `protection` — see _updateProtection.
+  { id: 'protection', label: 'Rooster', price: 150, icon: 'rooster' },
 ]
 
 const STYLE_CSS = `
@@ -166,6 +169,22 @@ const STYLE_CSS = `
   border-bottom: 10px solid var(--duk-red);
   filter: drop-shadow(0 2px 0 var(--duk-ink));
 }
+/* protection: red rooster crest over a green sickle-tail arc. */
+.duk-shop-icon--rooster { background: var(--duk-cream); }
+.duk-shop-icon--rooster::before {
+  content: ''; position: absolute; top: 3px; left: 50%;
+  transform: translateX(-50%);
+  width: 24px; height: 13px;
+  background: var(--duk-red);
+  clip-path: polygon(0 100%, 10% 35%, 24% 100%, 38% 8%, 55% 100%, 70% 28%, 86% 100%);
+}
+.duk-shop-icon--rooster::after {
+  content: ''; position: absolute; bottom: 4px; left: 50%;
+  transform: translateX(-50%) rotate(-14deg);
+  width: 19px; height: 11px; border-radius: 50%;
+  background: #2c7a55; border: 2px solid var(--duk-ink);
+}
+.duk-shop-btn:disabled .duk-shop-icon--rooster::after { background: #9aa88f; }
 /* hire-collector: straw hat — wide tan brim, small crown. */
 .duk-shop-icon--collector { background: var(--duk-cream); }
 .duk-shop-icon--collector::before {
@@ -294,7 +313,7 @@ export class Shop {
     el.classList.add('duk-bounce')
   }
 
-  setState({ money = 0, selection = null, tiers = null } = {}) {
+  setState({ money = 0, selection = null, tiers = null, protection = null } = {}) {
     this._money = money
     const maxTier = tiers?.max ?? MAX_TIER
     const chickenSelected = selection?.type === 'chicken'
@@ -307,6 +326,19 @@ export class Shop {
       this.buttons[cfg.id].disabled = !enabled
     }
     this._updateTierReadout(chickenSelected ? tier : null, maxTier)
+    this._updateProtection(protection, money)
+  }
+
+  /** The protection button climbs the chain: it always offers the NEXT thing
+   *  — a first rooster, or the selected guardian's upgrade — or reads MAX. */
+  _updateProtection(p, money) {
+    const btn = this.buttons['protection']
+    if (!btn) return
+    const label = p?.label ?? 'Rooster'
+    const price = p?.price ?? 150
+    btn.querySelector('.duk-shop-label').textContent = label
+    btn.querySelector('.duk-shop-price').textContent = p?.maxed ? 'MAX' : `$${price}`
+    btn.disabled = Boolean(p?.maxed) || money < price
   }
 
   _updateTierReadout(tier, maxTier) {
