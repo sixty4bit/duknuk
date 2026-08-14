@@ -387,6 +387,10 @@ function addCoop(pos) {
   const coop = new Coop(scene, world, pos)
   coops.push(coop)
   registerPickRoot(coop.mesh, 'coop', coop)
+  // New building on the farm: every collector re-deals his personal route
+  // (keeping whatever coop he is mid-walk toward) so the new coop slots in
+  // at a different point of each hand's rotation.
+  for (const guy of collectors) guy.refreshRoute()
   return coop
 }
 

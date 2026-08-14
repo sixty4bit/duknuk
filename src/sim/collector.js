@@ -186,6 +186,15 @@ function disposeObject(object) {
   })
 }
 
+function shuffled(arr) {
+  const a = [...arr]
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[a[i], a[j]] = [a[j], a[i]]
+  }
+  return a
+}
+
 // ------------------------------------------------------------------ Collector
 
 export class Collector {
@@ -196,6 +205,13 @@ export class Collector {
     this.scene = scene
     this.world = world
     this.coops = coops
+    // Personal route: this collector's own random ordering of the coops.
+    // Every hand used to greedily target the fullest coop, so a second
+    // collector walked the first one's route seconds behind and stooped at
+    // already-emptied coops (carl-fyffe, 2026-08-14). Each hand now works
+    // his own deck; refreshRoute() re-deals it when the farm changes shape.
+    this._route = shuffled(coops)
+    this._routeIdx = -1
     this.mesh = buildFarmhand()
     this.mesh.position.set(BARN_IDLE.x, 0, BARN_IDLE.z)
     scene.add(this.mesh)
@@ -240,12 +256,27 @@ export class Collector {
 
   // --- targeting -------------------------------------------------------------
 
+  /** Next stop on HIS route with anything to collect — round-robin from
+   *  wherever he last stopped, not a greedy sweep to the fullest coop. */
   _pickTarget() {
-    let best = null
-    for (const c of this.coops) {
-      if (c.product > 0 && (!best || c.product > best.product)) best = c
+    if (this._route.length !== this.coops.length) this.refreshRoute()
+    for (let k = 1; k <= this._route.length; k++) {
+      const i = (this._routeIdx + k) % this._route.length
+      if (this._route[i].product > 0) {
+        this._routeIdx = i
+        return this._route[i]
+      }
     }
-    return best
+    return null
+  }
+
+  /** Re-deal the route — called on hire-time catch-up (route/coop count
+   *  drift) and by main.js whenever a new coop is raised. The coop he is
+   *  currently aimed at rides in `_target` and stays exactly where it is;
+   *  only the future ordering gets mixed up. */
+  refreshRoute() {
+    this._route = shuffled(this.coops)
+    this._routeIdx = Math.max(-1, this._route.indexOf(this._target))
   }
 
   /** Falls back to the coop's own position if its door happens to be blocked
