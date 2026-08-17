@@ -184,7 +184,17 @@ export class Chicken {
     if (hungryIdle || this._state === 'starving' || this._state === 'waiting') this._enterWalkToFeeder()
   }
 
+  /** Is there a hopper she can eat from right now? Feeders are farm
+   *  infrastructure, not per-hen equipment: if her assigned one is missing or
+   *  dry, she looks for the nearest stocked feeder in range via the
+   *  `findFeeder` hook main.js wires in. This is the single choke point every
+   *  hungry path checks, so the lookup self-heals here — a feeder bought
+   *  after the hen (or for a different hen) still keeps her earning, which is
+   *  the whole reason to buy one. */
   _feederReady() {
+    if (!this.feeder || this.feeder.hasFeed?.() === false) {
+      this.feeder = this.findFeeder?.(this) ?? this.feeder
+    }
     return !!this.feeder && this.feeder.hasFeed?.() !== false
   }
 
@@ -238,10 +248,14 @@ export class Chicken {
     this._thoughtBubble.visible = true
   }
 
-  /** Bare patch: feeder first, then the mature hen's patient sit, then panic. */
+  /** Bare patch: feeder first, then the mature hen's patient sit, then panic.
+   *  `onHungry` fires only on the no-feeder branches — she is now earning
+   *  nothing until regrowth, which is exactly the moment the player should
+   *  hear that a feeder would keep the eggs coming (main.js throttles it). */
   _enterHungry() {
-    if (this._feederReady()) this._enterWalkToFeeder()
-    else if (this.mature) this._enterWaiting()
+    if (this._feederReady()) return this._enterWalkToFeeder()
+    this.onHungry?.(this)
+    if (this.mature) this._enterWaiting()
     else this._enterStarving()
   }
 

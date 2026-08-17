@@ -207,11 +207,44 @@ function handleEgg(chicken, { premium = true } = {}) {
   }, 650)
 }
 
+// A hungry hen forages the farm's feeders, not just "her" feeder: nearest
+// stocked hopper within reach of where she stands. Range keeps placement a
+// real decision — one feeder cannot serve the whole map.
+const FEEDER_REACH = 24
+
+function nearestFeeder(hen) {
+  let best = null
+  let bestD = FEEDER_REACH
+  for (const f of feeders) {
+    if (f.hasFeed?.() === false) continue
+    const d = Math.hypot(hen.position.x - f.position.x, hen.position.z - f.position.z)
+    if (d < bestD) {
+      bestD = d
+      best = f
+    }
+  }
+  return best
+}
+
+// The "you are losing money right now" beat, throttled so a whole flock going
+// hungry at once reads as one message, not a toast storm.
+let hungryToastAt = -Infinity
+const HUNGRY_TOAST_GAP = 45
+
+function onHenHungry(hen) {
+  const now = performance.now() / 1000
+  if (now - hungryToastAt < HUNGRY_TOAST_GAP) return
+  hungryToastAt = now
+  hud.toast(`${hen.henName ?? 'A hen'}'s patch is bare — no eggs from her until it regrows. A feeder in reach keeps her earning.`, { mood: 'sad' })
+}
+
 function addChicken(coop, { tier = 0 } = {}) {
   const hen = new Chicken(scene, world, coop)
   hen.setTier(tier)
   hen.henName = HEN_NAMES[henNameIdx++ % HEN_NAMES.length]
   hen.onEgg = (info) => handleEgg(hen, info)
+  hen.findFeeder = nearestFeeder
+  hen.onHungry = onHenHungry
   coop.chickens.push(hen)
   chickens.push(hen)
   registerPickRoot(hen.mesh, 'chicken', hen)
